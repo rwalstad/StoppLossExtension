@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>StopLoss Monitor Window</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Arial, sans-serif;
+      }
+
+      body {
+        margin: 0;
+        background: #f4f7f8;
+        color: #102a43;
+      }
+
+      main {
+        padding: 16px;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 20px;
+      }
+
+      p {
+        margin: 0 0 12px;
+        color: #486581;
+      }
+
+      .card {
+        background: #fff;
+        border: 1px solid #d9e2ec;
+        border-radius: 12px;
+        padding: 12px;
+      }
+
+      .card + .card {
+        margin-top: 12px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      th,
+      td {
+        text-align: left;
+        padding: 8px;
+        border-bottom: 1px solid #e6edf3;
+        vertical-align: top;
+      }
+
+      th {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #486581;
+      }
+
+      .is-current {
+        background: #f0f9ff;
+      }
+
+      .is-hit {
+        background: #fff3bf;
+      }
+
+      .badge {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: #0f8b8d;
+        color: #fff;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .muted {
+        color: #627d98;
+        font-size: 13px;
+      }
+
+      .message-list {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 8px;
+      }
+
+      .message-item {
+        display: grid;
+        grid-template-columns: 88px 64px 1fr;
+        gap: 8px;
+        font-size: 13px;
+        padding: 8px 0;
+        border-bottom: 1px solid #e6edf3;
+      }
+
+      .message-item:last-child {
+        border-bottom: 0;
+        padding-bottom: 0;
+      }
+
+      .message-meta {
+        color: #627d98;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .status-hit {
+        color: #8d6b00;
+        font-weight: 700;
+      }
+
+      .footer-note {
+        margin-top: 12px;
+        color: #627d98;
+        font-size: 11px;
+        line-height: 1.5;
+      }
+
+      .footer-note strong {
+        color: #486581;
+      }
+
+      .toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .toolbar button {
+        border: 0;
+        border-radius: 999px;
+        background: #0f8b8d;
+        color: #fff;
+        padding: 8px 12px;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .toolbar button:disabled {
+        opacity: 0.7;
+        cursor: default;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="card">
+        <h1>Active monitors</h1>
+        <p id="monitorSummary">Loading active monitors...</p>
+        <div class="toolbar">
+          <span class="muted">Background quotes plus latest saved server snapshots.</span>
+          <button id="refreshMonitorPrices" type="button">Refresh prices</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Name</th>
+              <th>Trigger</th>
+              <th>Current price</th>
+              <th>Currency</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="monitorTableBody">
+            <tr>
+              <td colspan="6" class="muted">No active monitors found.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h1>Messages</h1>
+        <p>Short trigger events with date and time.</p>
+        <ul id="messageList" class="message-list">
+          <li id="messageEmpty" class="muted">No trigger hits yet.</li>
+        </ul>
+        <div class="footer-note">
+          <div><strong>Version:</strong> <span id="monitorVersion">-</span></div>
+          <div><strong>Last updated:</strong> <span id="lastUpdatedValue">Waiting for price updates</span></div>
+          <div>Refresh the Nordnet page if this monitor stops receiving the current instrument price.</div>
+        </div>
+      </div>
+    </main>
+
+    <script src="assets/js/monitor.js"></script>
+  </body>
+</html>

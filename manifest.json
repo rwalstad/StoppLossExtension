@@ -1,0 +1,40 @@
+{
+  "name": "StopLoss Nordnet Import",
+  "description": "Import Nordnet instruments into the local StopLoss dashboard",
+  "version": "1.1.27",
+  "manifest_version": 3,
+  "permissions": ["storage", "tabs", "scripting", "alarms"],
+  "host_permissions": [
+    "https://www.nordnet.no/*",
+    "http://localhost:3400/*",
+    "https://trading.just4us.no/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.nordnet.no/aksjer/kurser/*",
+        "https://www.nordnet.no/etp/sertifikat/*/liste/*"
+      ],
+      "js": ["assets/js/nordnet-stock.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "white-label/favicon-16.png",
+      "32": "white-label/favicon.png",
+      "48": "white-label/favicon-48.png",
+      "128": "white-label/favicon-128.png"
+    }
+  },
+  "icons": {
+    "16": "white-label/favicon-16.png",
+    "32": "white-label/favicon.png",
+    "48": "white-label/favicon-48.png",
+    "128": "white-label/favicon-128.png"
+  }
+}

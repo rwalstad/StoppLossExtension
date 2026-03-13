@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>StopLoss Nordnet Import</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Arial, sans-serif;
+      }
+
+      body {
+        margin: 0;
+        width: 360px;
+        background: #f4f7f8;
+        color: #102a43;
+      }
+
+      main {
+        padding: 16px;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 18px;
+      }
+
+      p {
+        margin: 0;
+        line-height: 1.4;
+      }
+
+      .stack {
+        display: grid;
+        gap: 12px;
+      }
+
+      .card {
+        background: #ffffff;
+        border: 1px solid #d9e2ec;
+        border-radius: 12px;
+        padding: 12px;
+      }
+
+      .status {
+        font-size: 13px;
+        padding: 10px 12px;
+        border-radius: 10px;
+      }
+
+      .status.ok {
+        background: #e3f9e5;
+        color: #1f7a3d;
+      }
+
+      .status.error {
+        background: #fde8e8;
+        color: #b42318;
+      }
+
+      .status.info {
+        background: #e8f1fb;
+        color: #1d4f91;
+      }
+
+      .label {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 12px;
+        color: #486581;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
+      .value {
+        font-size: 14px;
+        word-break: break-word;
+      }
+
+      button {
+        width: 100%;
+        border: 0;
+        border-radius: 10px;
+        background: #0f8b8d;
+        color: #ffffff;
+        padding: 10px 12px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+
+      .secondary {
+        background: #d9e2ec;
+        color: #102a43;
+      }
+
+      .details {
+        display: none;
+      }
+
+      .details.visible {
+        display: grid;
+        gap: 8px;
+      }
+
+      .detail-list {
+        margin: 0;
+        padding-left: 18px;
+        color: #334e68;
+        font-size: 13px;
+      }
+
+      .detail-list li + li {
+        margin-top: 4px;
+      }
+
+      .section-title {
+        font-size: 12px;
+        color: #486581;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        margin-bottom: 6px;
+      }
+
+      .monitor-list {
+        margin: 0;
+        padding-left: 18px;
+        color: #334e68;
+        font-size: 13px;
+      }
+
+      .monitor-list li + li {
+        margin-top: 6px;
+      }
+
+      .muted {
+        color: #627d98;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="stack">
+        <section class="card">
+          <h1>Nordnet Import</h1>
+          <p>Imports the currently open Nordnet instrument into the StockTrade app (extension ver. <span id="extensionVersion">-</span>).</p>
+        </section>
+        <section class="card stack">
+          <div id="dashboardStatus" class="status info">Checking local dashboard...</div>
+          <div>
+            <span class="label">Active tab</span>
+            <div id="activeTab" class="value">Checking browser tab...</div>
+          </div>
+          <div>
+            <span class="label">Feature reset</span>
+            <div class="value">Reset now means enabling Nordnet instrument import for this extension.</div>
+          </div>
+        </section>
+
+        <section class="card stack">
+          <button id="importButton" disabled>Import current stock</button>
+          <button id="resetButton" class="secondary">Reset extension state</button>
+          <div id="actionStatus" class="status info">Open a Nordnet instrument page to import an instrument.</div>
+        </section>
+
+        <section id="existingInstrumentPanel" class="card stack details">
+          <div>
+            <div class="section-title">Current stock</div>
+            <div id="existingInstrumentTitle" class="value">No current stock selected.</div>
+          </div>
+          <ul id="existingInstrumentDetails" class="detail-list"></ul>
+          <div>
+            <div class="section-title">Active monitors</div>
+            <ul id="activeMonitorList" class="monitor-list"></ul>
+            <div id="activeMonitorEmpty" class="muted">No active monitors found.</div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <script src="assets/js/popup.js"></script>
+  </body>
+</html>
