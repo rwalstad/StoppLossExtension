@@ -6,6 +6,7 @@
   const BUTTON_ID = 'stoploss-import-button';
   const STATUS_ID = 'stoploss-import-status';
   const TRADER_STORAGE_KEY = 'stoploss-selected-trader-id';
+  const TRADER_NAME_STORAGE_KEY = 'stoploss-selected-trader-name';
   const UI_POSITION_STORAGE_KEY = 'stoploss-import-ui-position';
   const ACTION_MODE_IMPORT = 'import';
   const ACTION_MODE_STOP_LOSS = 'stop-loss';
@@ -709,6 +710,24 @@
       } else {
         window.localStorage.removeItem(TRADER_STORAGE_KEY);
         chrome.storage.local.remove(TRADER_STORAGE_KEY);
+      }
+    } catch (_error) {
+      // Ignore storage failures and continue with the current page state.
+    }
+  }
+
+  function writeSelectedTraderSelection(traderId, traderName = '') {
+    writeSelectedTraderId(traderId);
+
+    try {
+      if (traderName) {
+        window.localStorage.setItem(TRADER_NAME_STORAGE_KEY, traderName);
+        chrome.storage.local.set({
+          [TRADER_NAME_STORAGE_KEY]: traderName,
+        });
+      } else {
+        window.localStorage.removeItem(TRADER_NAME_STORAGE_KEY);
+        chrome.storage.local.remove(TRADER_NAME_STORAGE_KEY);
       }
     } catch (_error) {
       // Ignore storage failures and continue with the current page state.
@@ -1794,7 +1813,7 @@
       const option = traderSelect.options[traderSelect.selectedIndex];
       selectedTraderId = traderSelect.value;
       selectedTraderName = option?.textContent ?? '';
-      writeSelectedTraderId(selectedTraderId);
+      writeSelectedTraderSelection(selectedTraderId, selectedTraderName);
       traderLabel.textContent = selectedTraderName
         ? `Current trader: ${selectedTraderName}`
         : 'Trader: none selected';
@@ -2286,8 +2305,10 @@
         const activeTraders = traders.filter((trader) => trader?.isActive !== false);
         const options = activeTraders.length ? activeTraders : traders;
         const selectedTrader =
+          options.find((trader) => trader.id === storedTraderId) ??
           options.find((trader) => trader?.isSelected) ??
-          options.find((trader) => trader.id === storedTraderId) ?? options[0] ?? null;
+          options[0] ??
+          null;
 
         traderSelect.replaceChildren();
 
@@ -2296,6 +2317,7 @@
           selectedTraderName = '';
           traderLabel.textContent = 'Trader: none configured';
           traderSelect.style.display = 'none';
+          writeSelectedTraderSelection('', '');
           return;
         }
 
@@ -2311,7 +2333,7 @@
         traderSelect.value = selectedTrader.id;
         traderSelect.style.display = options.length > 1 ? 'inline-block' : 'none';
         traderLabel.textContent = `Trader: ${selectedTraderName}`;
-        writeSelectedTraderId(selectedTraderId);
+        writeSelectedTraderSelection(selectedTraderId, selectedTraderName);
 
         try {
           await refreshButtonState(toggle, button, status, traderLabel, selectedTraderId);

@@ -5,6 +5,8 @@ const messageEmpty = document.getElementById('messageEmpty');
 const lastUpdatedValue = document.getElementById('lastUpdatedValue');
 const refreshButton = document.getElementById('refreshMonitorPrices');
 const monitorVersion = document.getElementById('monitorVersion');
+const SELECTED_TRADER_ID_STORAGE_KEY = 'stoploss-selected-trader-id';
+const SELECTED_TRADER_NAME_STORAGE_KEY = 'stoploss-selected-trader-name';
 
 const rowMap = new Map();
 const hitState = new Map();
@@ -13,6 +15,8 @@ const manifestVersion = chrome.runtime.getManifest().version ?? 'unknown';
 
 let monitorPlans = [];
 let monitorCurrentTicker = '';
+let monitorTraderId = '';
+let monitorTraderName = '';
 let refreshInFlight = false;
 let refreshIntervalId = null;
 
@@ -93,6 +97,16 @@ function getPlanKey(plan) {
   ].join('|');
 }
 
+function getSelectedTraderLabel() {
+  const traderLabel = String(monitorTraderName ?? '').trim();
+  if (traderLabel) {
+    return traderLabel;
+  }
+
+  const traderId = String(monitorTraderId ?? '').trim();
+  return traderId || 'none selected';
+}
+
 function isTriggerHit(plan, price) {
   if (typeof price !== 'number' || !Number.isFinite(price)) {
     return false;
@@ -137,7 +151,7 @@ function renderPlans() {
     emptyRow.innerHTML = '<td colspan="6" class="muted">No active monitors found.</td>';
     monitorTableBody.append(emptyRow);
     if (monitorSummary) {
-      monitorSummary.textContent = 'No active monitors found.';
+      monitorSummary.textContent = `No active monitors found for trader: ${getSelectedTraderLabel()}.`;
     }
     return;
   }
@@ -165,7 +179,9 @@ function renderPlans() {
   });
 
   if (monitorSummary) {
-    monitorSummary.textContent = `${monitorPlans.length} monitor(s)${monitorCurrentTicker ? `, current stock: ${monitorCurrentTicker}` : ''}`;
+    monitorSummary.textContent =
+      `Active monitors for trader: ${getSelectedTraderLabel()} ` +
+      `(${monitorPlans.length} monitor(s)${monitorCurrentTicker ? `, current stock: ${monitorCurrentTicker}` : ''})`;
   }
 }
 
@@ -283,11 +299,25 @@ async function readStoredPrices() {
 }
 
 async function loadMonitorState() {
-  const storage = await chrome.storage.local.get(['floatingMonitorState']);
+  const storage = await chrome.storage.local.get([
+    'floatingMonitorState',
+    SELECTED_TRADER_ID_STORAGE_KEY,
+    SELECTED_TRADER_NAME_STORAGE_KEY,
+  ]);
   const state = storage?.floatingMonitorState ?? {};
 
   monitorPlans = Array.isArray(state?.plans) ? state.plans : [];
   monitorCurrentTicker = normalizeTicker(state?.currentTicker);
+  monitorTraderId = String(
+    state?.currentTraderId ??
+    storage?.[SELECTED_TRADER_ID_STORAGE_KEY] ??
+    '',
+  ).trim();
+  monitorTraderName = String(
+    state?.currentTraderName ??
+    storage?.[SELECTED_TRADER_NAME_STORAGE_KEY] ??
+    '',
+  ).trim();
 
   renderPlans();
 }
@@ -403,6 +433,11 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
   if (changes?.floatingMonitorState) {
     void loadMonitorState().then(() => refreshPrices({ silent: true }));
+    return;
+  }
+
+  if (changes?.[SELECTED_TRADER_ID_STORAGE_KEY] || changes?.[SELECTED_TRADER_NAME_STORAGE_KEY]) {
+    void loadMonitorState();
   }
 });
 
