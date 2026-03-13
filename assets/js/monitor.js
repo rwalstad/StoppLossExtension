@@ -5,8 +5,18 @@ const messageEmpty = document.getElementById('messageEmpty');
 const lastUpdatedValue = document.getElementById('lastUpdatedValue');
 const refreshButton = document.getElementById('refreshMonitorPrices');
 const monitorVersion = document.getElementById('monitorVersion');
+const selectedTraderLabel = document.getElementById('selectedTraderLabel');
+const toggleViewButton = document.getElementById('toggleMonitorView');
+const minimalTicker = document.getElementById('minimalTicker');
+const minimalPrice = document.getElementById('minimalPrice');
+const minimalMeta = document.getElementById('minimalMeta');
 const SELECTED_TRADER_ID_STORAGE_KEY = 'stoploss-selected-trader-id';
 const SELECTED_TRADER_NAME_STORAGE_KEY = 'stoploss-selected-trader-name';
+const MONITOR_VIEW_MODE_KEY = 'viewMode';
+const MONITOR_VIEW_MODE_MINIMAL = 'minimal';
+const MONITOR_VIEW_MODE_FULL = 'full';
+const FULL_WINDOW_SIZE = { width: 720, height: 640 };
+const MINIMAL_WINDOW_SIZE = { width: 280, height: 120 };
 
 const rowMap = new Map();
 const hitState = new Map();
@@ -19,6 +29,8 @@ let monitorTraderId = '';
 let monitorTraderName = '';
 let refreshInFlight = false;
 let refreshIntervalId = null;
+let monitorViewMode = MONITOR_VIEW_MODE_FULL;
+let latestPriceMap = {};
 
 if (monitorVersion) {
   monitorVersion.textContent = manifestVersion;
@@ -107,6 +119,99 @@ function getSelectedTraderLabel() {
   return traderId || 'none selected';
 }
 
+function syncSelectedTraderLabel() {
+  if (selectedTraderLabel) {
+    selectedTraderLabel.textContent = getSelectedTraderLabel();
+  }
+}
+
+function getPreferredCurrentPlan() {
+  if (monitorPlans.length === 0) {
+    return null;
+  }
+
+  if (monitorCurrentTicker) {
+    const currentPlan = monitorPlans.find((plan) => tickersMatch(plan?.instrument?.ticker, monitorCurrentTicker));
+    if (currentPlan) {
+      return currentPlan;
+    }
+  }
+
+  return monitorPlans[0] ?? null;
+}
+
+function getStoredPriceEntryForTicker(ticker, priceMap) {
+  if (!ticker) {
+    return null;
+  }
+
+  const matchedKey = Object.keys(priceMap ?? {}).find((key) => tickersMatch(key, ticker));
+  return matchedKey ? priceMap[matchedKey] : null;
+}
+
+function updateMinimalPanel(priceMap = {}) {
+  const plan = getPreferredCurrentPlan();
+
+  if (!plan) {
+    if (minimalTicker) {
+      minimalTicker.textContent = 'No monitor';
+    }
+    if (minimalPrice) {
+      minimalPrice.textContent = '-';
+    }
+    if (minimalMeta) {
+      minimalMeta.textContent = 'No active monitors found';
+    }
+    return;
+  }
+
+  const ticker = normalizeTicker(plan?.instrument?.ticker) || '-';
+  const entry = getStoredPriceEntryForTicker(ticker, priceMap);
+  const price = entry?.ok ? Number(entry.price) : null;
+  const isCurrent = monitorCurrentTicker && tickersMatch(ticker, monitorCurrentTicker);
+  const status = isTriggerHit(plan, price) ? 'Trigger hit' : isCurrent ? 'Current' : 'Watching';
+  const currency = String(plan?.instrument?.currency ?? '').trim();
+
+  if (minimalTicker) {
+    minimalTicker.textContent = ticker;
+  }
+  if (minimalPrice) {
+    minimalPrice.textContent = entry?.ok ? `${formatPrice(price)}${currency ? ` ${currency}` : ''}` : '-';
+  }
+  if (minimalMeta) {
+    minimalMeta.textContent = `${status}${entry?.fetchedAt ? ` | ${formatTimestamp(entry.fetchedAt)}` : ''}`;
+  }
+}
+
+async function persistViewMode() {
+  const storage = await chrome.storage.local.get(['floatingMonitorState']);
+  const currentState = storage?.floatingMonitorState ?? {};
+  await chrome.storage.local.set({
+    floatingMonitorState: {
+      ...currentState,
+      [MONITOR_VIEW_MODE_KEY]: monitorViewMode,
+    },
+  });
+}
+
+function applyViewMode() {
+  document.body.classList.toggle('minimal-mode', monitorViewMode === MONITOR_VIEW_MODE_MINIMAL);
+
+  if (toggleViewButton) {
+    toggleViewButton.textContent =
+      monitorViewMode === MONITOR_VIEW_MODE_MINIMAL ? 'Normal view' : 'Minimal view';
+  }
+
+  const nextSize =
+    monitorViewMode === MONITOR_VIEW_MODE_MINIMAL
+      ? MINIMAL_WINDOW_SIZE
+      : FULL_WINDOW_SIZE;
+
+  if (typeof window.resizeTo === 'function') {
+    window.resizeTo(nextSize.width, nextSize.height);
+  }
+}
+
 function isTriggerHit(plan, price) {
   if (typeof price !== 'number' || !Number.isFinite(price)) {
     return false;
@@ -143,6 +248,7 @@ function appendMessage(plan, price, fetchedAt) {
 }
 
 function renderPlans() {
+  syncSelectedTraderLabel();
   rowMap.clear();
   monitorTableBody.replaceChildren();
 
@@ -153,6 +259,7 @@ function renderPlans() {
     if (monitorSummary) {
       monitorSummary.textContent = `No active monitors found for trader: ${getSelectedTraderLabel()}.`;
     }
+    updateMinimalPanel();
     return;
   }
 
@@ -180,12 +287,15 @@ function renderPlans() {
 
   if (monitorSummary) {
     monitorSummary.textContent =
-      `Active monitors for trader: ${getSelectedTraderLabel()} ` +
-      `(${monitorPlans.length} monitor(s)${monitorCurrentTicker ? `, current stock: ${monitorCurrentTicker}` : ''})`;
+      `(Loaded ` +
+      `${monitorPlans.length} monitor(s)${monitorCurrentTicker ? `, current stock: ${monitorCurrentTicker}` : ''})`;
   }
+
+  updateMinimalPanel();
 }
 
 function applyPrices(priceMap) {
+  latestPriceMap = mergePriceMaps(priceMap, latestPriceMap);
   let newestFetchedAt = null;
 
   monitorPlans.forEach((plan, index) => {
@@ -195,8 +305,8 @@ function applyPrices(priceMap) {
     }
 
     const ticker = normalizeTicker(plan?.instrument?.ticker);
-    const entryKey = Object.keys(priceMap ?? {}).find((key) => tickersMatch(key, ticker));
-    const entry = entryKey ? priceMap[entryKey] : null;
+    const entryKey = Object.keys(latestPriceMap ?? {}).find((key) => tickersMatch(key, ticker));
+    const entry = entryKey ? latestPriceMap[entryKey] : null;
     const price = entry?.ok ? Number(entry.price) : null;
     const hit = isTriggerHit(plan, price);
     const previousHit = hitState.get(index) === true;
@@ -232,6 +342,8 @@ function applyPrices(priceMap) {
     lastUpdatedValue.textContent = formatTimestamp(newestFetchedAt);
     lastUpdatedValue.title = `Monitor version ${manifestVersion}`;
   }
+
+  updateMinimalPanel(latestPriceMap);
 }
 
 function toPriceMapFromServer(response) {
@@ -308,6 +420,9 @@ async function loadMonitorState() {
 
   monitorPlans = Array.isArray(state?.plans) ? state.plans : [];
   monitorCurrentTicker = normalizeTicker(state?.currentTicker);
+  monitorViewMode = state?.[MONITOR_VIEW_MODE_KEY] === MONITOR_VIEW_MODE_MINIMAL
+    ? MONITOR_VIEW_MODE_MINIMAL
+    : MONITOR_VIEW_MODE_FULL;
   monitorTraderId = String(
     state?.currentTraderId ??
     storage?.[SELECTED_TRADER_ID_STORAGE_KEY] ??
@@ -319,6 +434,8 @@ async function loadMonitorState() {
     '',
   ).trim();
 
+  syncSelectedTraderLabel();
+  applyViewMode();
   renderPlans();
 }
 
@@ -444,6 +561,15 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 refreshButton?.addEventListener('click', () => {
   console.info('[StopLossExtension monitor] Refresh prices button clicked');
   void refreshPrices();
+});
+
+toggleViewButton?.addEventListener('click', () => {
+  monitorViewMode =
+    monitorViewMode === MONITOR_VIEW_MODE_MINIMAL
+      ? MONITOR_VIEW_MODE_FULL
+      : MONITOR_VIEW_MODE_MINIMAL;
+  applyViewMode();
+  void persistViewMode();
 });
 
 window.addEventListener('beforeunload', () => {

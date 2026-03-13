@@ -16,8 +16,16 @@
         color: #102a43;
       }
 
+      body.minimal-mode {
+        background: #eef4f7;
+      }
+
       main {
         padding: 16px;
+      }
+
+      body.minimal-mode main {
+        padding: 10px;
       }
 
       h1 {
@@ -39,6 +47,10 @@
 
       .card + .card {
         margin-top: 12px;
+      }
+
+      body.minimal-mode .card + .card {
+        margin-top: 0;
       }
 
       table {
@@ -152,16 +164,81 @@
         opacity: 0.7;
         cursor: default;
       }
+
+      .toolbar-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .toolbar button.secondary {
+        background: #d9e2ec;
+        color: #102a43;
+      }
+
+      .minimal-panel {
+        display: none;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 12px;
+      }
+
+      .minimal-symbol {
+        font-size: 18px;
+        font-weight: 700;
+        line-height: 1.2;
+      }
+
+      .minimal-price {
+        font-size: 22px;
+        font-weight: 700;
+        line-height: 1;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+
+      .minimal-meta {
+        color: #627d98;
+        font-size: 11px;
+        margin-top: 4px;
+      }
+
+      .minimal-empty {
+        color: #627d98;
+        font-size: 13px;
+      }
+
+      body.minimal-mode .full-panel {
+        display: none;
+      }
+
+      body.minimal-mode .minimal-panel {
+        display: flex;
+      }
     </style>
   </head>
   <body>
     <main>
       <div class="card">
-        <h1>Active monitors</h1>
+        <div id="minimalPanel" class="minimal-panel" aria-live="polite">
+          <div>
+            <div id="minimalTicker" class="minimal-symbol">-</div>
+            <div id="minimalMeta" class="minimal-meta">Waiting for price updates</div>
+          </div>
+          <div id="minimalPrice" class="minimal-price">-</div>
+        </div>
+        <div class="full-panel">
+        <h1>Active monitors for trader: <span id="selectedTraderLabel">-</span></h1>
         <p id="monitorSummary">Loading active monitors...</p>
         <div class="toolbar">
           <span class="muted">Background quotes plus latest saved server snapshots.</span>
-          <button id="refreshMonitorPrices" type="button">Refresh prices</button>
+          <div class="toolbar-actions">
+            <button id="toggleMonitorView" class="secondary" type="button">Minimal view</button>
+            <button id="refreshMonitorPrices" type="button">Refresh prices</button>
+          </div>
         </div>
         <table>
           <thead>
@@ -180,8 +257,9 @@
             </tr>
           </tbody>
         </table>
+        </div>
       </div>
-      <div class="card">
+      <div class="card full-panel">
         <h1>Messages</h1>
         <p>Short trigger events with date and time.</p>
         <ul id="messageList" class="message-list">

@@ -158,8 +158,12 @@ async function openFloatingMonitorWindow() {
     return;
   }
 
+  const storage = await chrome.storage.local.get(['floatingMonitorState']);
+  const currentFloatingMonitorState = storage?.floatingMonitorState ?? {};
+
   await chrome.storage.local.set({
     floatingMonitorState: {
+      ...currentFloatingMonitorState,
       plans: latestMonitoringPlans,
       currentTicker: latestMonitorTicker,
       updatedAt: new Date().toISOString(),
