@@ -72,6 +72,31 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
+function renderSourceUrlLink(url, ticker) {
+  const normalizedUrl = typeof url === 'string' ? url.trim() : '';
+  if (!normalizedUrl) {
+    return '';
+  }
+
+  const label = `Open quote page for ${normalizeTicker(ticker) || 'instrument'}`;
+  return `
+    <a
+      class="ticker-link-action"
+      href="${escapeHtml(normalizedUrl)}"
+      target="_blank"
+      rel="noreferrer"
+      aria-label="${escapeHtml(label)}"
+      title="${escapeHtml(label)}"
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M10 13a5 5 0 0 1 0-7l1.5-1.5a5 5 0 0 1 7 7L17 13"></path>
+        <path d="M14 11a5 5 0 0 1 0 7l-1.5 1.5a5 5 0 1 1-7-7L7 11"></path>
+        <path d="M8.5 15.5 15.5 8.5"></path>
+      </svg>
+    </a>
+  `;
+}
+
 function formatPrice(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return '-';
@@ -209,7 +234,7 @@ function updateMinimalPanel(priceMap = {}) {
       row.classList.toggle('is-hit', hit);
       row.innerHTML = `
         <div>
-          <div class="minimal-symbol">${escapeHtml(ticker)}</div>
+          <div class="minimal-symbol ticker-link">${escapeHtml(ticker)} ${renderSourceUrlLink(plan?.instrument?.sourceUrl, ticker)}</div>
           <div class="minimal-meta">${isCurrent ? 'Current' : 'Watching'}</div>
         </div>
         <div class="minimal-price">${escapeHtml(entry?.ok ? `${formatPrice(price)}${currency ? ` ${currency}` : ''}` : '-')}</div>
@@ -312,7 +337,7 @@ function renderPlans() {
     row.className = isCurrent ? 'is-current' : '';
     row.dataset.planIndex = String(index);
     row.innerHTML = `
-      <td><strong>${escapeHtml(ticker)}</strong> ${badge}</td>
+      <td><span class="ticker-link"><strong>${escapeHtml(ticker)}</strong>${renderSourceUrlLink(plan?.instrument?.sourceUrl, ticker)}</span> ${badge}</td>
       <td>${escapeHtml(plan?.instrument?.name ?? '-')}</td>
       <td>${escapeHtml(condition)} ${escapeHtml(plan?.triggerPrice ?? '-')}</td>
       <td data-role="price">-</td>
