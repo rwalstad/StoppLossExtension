@@ -313,6 +313,19 @@ async function savePendingBuyOrder(payload) {
     };
   }
 
+  if (responsePayload?.monitoringPlan && responsePayload?.instrument) {
+    await upsertStoredMonitoringPlan(
+      buildStoredMonitoringPlanEntry({
+        instrument: responsePayload.instrument,
+        monitoringPlan: responsePayload.monitoringPlan,
+        sourceUrl: payload?.instrument?.sourceUrl,
+      }),
+      {
+        currentTicker: responsePayload.instrument?.ticker ?? payload?.instrument?.ticker ?? '',
+      },
+    );
+  }
+
   return {
     ok: true,
     status: response.status,
@@ -345,6 +358,19 @@ async function saveMonitoringPlan(payload) {
       status: response.status,
       error: responsePayload?.error ?? responsePayload?.message ?? 'Failed to save monitoring plan.',
     };
+  }
+
+  if (responsePayload?.monitoringPlan && responsePayload?.instrument) {
+    await upsertStoredMonitoringPlan(
+      buildStoredMonitoringPlanEntry({
+        instrument: responsePayload.instrument,
+        monitoringPlan: responsePayload.monitoringPlan,
+        sourceUrl: payload?.instrument?.sourceUrl,
+      }),
+      {
+        currentTicker: responsePayload.instrument?.ticker ?? payload?.instrument?.ticker ?? '',
+      },
+    );
   }
 
   return {
@@ -812,6 +838,61 @@ async function syncFloatingMonitorStateFromPlans(plans) {
   }, resolve));
 }
 
+function buildStoredMonitoringPlanEntry({ instrument, monitoringPlan, sourceUrl }) {
+  if (!instrument || !monitoringPlan) {
+    return null;
+  }
+
+  return {
+    id: String(monitoringPlan.id ?? '').trim(),
+    kind: monitoringPlan.kind,
+    triggerPrice: String(monitoringPlan.triggerPrice ?? '').trim(),
+    triggerCondition: monitoringPlan.triggerCondition,
+    isEnabled: Boolean(monitoringPlan.isEnabled ?? true),
+    notes: monitoringPlan.notes ?? null,
+    triggeredAt: monitoringPlan.triggeredAt ?? null,
+    updatedAt: monitoringPlan.updatedAt ?? new Date().toISOString(),
+    instrument: {
+      id: instrument.id ?? null,
+      ticker: instrument.ticker ?? '',
+      name: instrument.name ?? '',
+      market: instrument.market ?? null,
+      currency: instrument.currency ?? '',
+      sourceUrl: typeof sourceUrl === 'string' && sourceUrl.trim() ? sourceUrl.trim() : null,
+    },
+  };
+}
+
+async function upsertStoredMonitoringPlan(plan, options = {}) {
+  if (!plan?.id) {
+    return;
+  }
+
+  const storage = await new Promise((resolve) => chrome.storage.local.get(['floatingMonitorState'], resolve));
+  const currentState = storage?.floatingMonitorState ?? {};
+  const currentPlans = Array.isArray(currentState?.plans) ? currentState.plans : [];
+  const nextPlans = [
+    plan,
+    ...currentPlans.filter((entry) => String(entry?.id ?? '').trim() !== plan.id),
+  ];
+
+  await syncMonitorTickersFromPlans(nextPlans);
+  await new Promise((resolve) => chrome.storage.local.set({
+    floatingMonitorState: {
+      ...currentState,
+      plans: nextPlans,
+      currentTicker: normalizeMonitorTicker(options?.currentTicker ?? currentState?.currentTicker),
+      updatedAt: new Date().toISOString(),
+    },
+  }, resolve));
+}
+
+async function readStoredMonitorPlans() {
+  const storage = await new Promise((resolve) => chrome.storage.local.get(['floatingMonitorState'], resolve));
+  const currentState = storage?.floatingMonitorState ?? {};
+  return Array.isArray(currentState?.plans) ? currentState.plans : [];
+}
+
 function isSupportedNordnetUrl(url) {
   return (
     typeof url === 'string' &&
@@ -927,15 +1008,6 @@ async function refreshOpenNordnetTabs() {
       if (ticker) {
         refreshedTickers.add(ticker);
       }
-
-      const snapshotResponse = await saveInstrumentPriceSnapshot(payload);
-      debugLog('Background snapshot refresh result', {
-        tabId: tab.id,
-        ticker: payload?.ticker ?? null,
-        ok: Boolean(snapshotResponse?.ok),
-        saved: Boolean(snapshotResponse?.data?.saved),
-        error: snapshotResponse?.error ?? null,
-      });
     } catch (error) {
       debugLog('Background tab refresh failed', {
         tabId: tab?.id ?? null,
@@ -979,15 +1051,6 @@ async function refreshInstrumentFromSourceUrl(plan, refreshedTickers) {
     const payload = payloadResponse.payload;
     await publishCurrentStockPriceUpdate(payload, 'nordnet-background-source-url');
 
-    const snapshotResponse = await saveInstrumentPriceSnapshot(payload);
-    debugLog('Background source-url refresh result', {
-      ticker,
-      sourceUrl,
-      ok: Boolean(snapshotResponse?.ok),
-      saved: Boolean(snapshotResponse?.data?.saved),
-      error: snapshotResponse?.error ?? null,
-    });
-
     refreshedTickers.add(ticker);
     return true;
   } catch (error) {
@@ -1027,21 +1090,9 @@ async function refreshMonitoredSourceUrls(plans, refreshedTickers) {
 
 async function runBackgroundPriceRefresh() {
   try {
-    const monitoringPlanResponse = await fetchMonitoringPlans();
-    const plans = monitoringPlanResponse?.data?.plans;
-
-    if (monitoringPlanResponse?.ok) {
-      await syncFloatingMonitorStateFromPlans(plans);
-    } else {
-      debugLog('Background monitoring plan sync failed', {
-        error: monitoringPlanResponse?.error ?? 'Unknown monitoring sync error',
-      });
-    }
-
+    const plans = await readStoredMonitorPlans();
     const refreshedTickers = await refreshOpenNordnetTabs();
-    if (monitoringPlanResponse?.ok) {
-      await refreshMonitoredSourceUrls(plans, refreshedTickers);
-    }
+    await refreshMonitoredSourceUrls(plans, refreshedTickers);
     await fetchPricesAndPublish();
   } catch (error) {
     debugLog('Background price refresh failed', {

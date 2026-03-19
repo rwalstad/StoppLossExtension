@@ -1427,12 +1427,6 @@
     const orderForm = extractOrderForm();
 
     if (response?.ok && response.data?.exists) {
-      void maybeReportCurrentPriceSnapshot(payload.payload, traderId).catch((error) => {
-        debugLog('Auto-save price snapshot failed', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-
       if (orderForm?.side === 'SELL' && traderId) {
         const target = await resolveStopLossTarget(traderId, payload.payload);
         if (target.ok) {

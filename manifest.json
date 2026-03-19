@@ -1,7 +1,7 @@
 {
   "name": "StopLoss Nordnet Import",
   "description": "Import Nordnet instruments into the local StopLoss dashboard",
-  "version": "1.2.30",
+  "version": "1.2.33",
   "manifest_version": 3,
   "permissions": ["storage", "tabs", "scripting", "alarms"],
   "host_permissions": [
@@ -19,6 +19,14 @@
         "https://www.nordnet.no/etp/sertifikat/*/liste/*"
       ],
       "js": ["assets/js/nordnet-stock.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://localhost:3400/*",
+        "https://trading.just4us.no/*"
+      ],
+      "js": ["assets/js/app-storage-sync.js"],
       "run_at": "document_idle"
     }
   ],

@@ -9,6 +9,7 @@ const existingInstrumentTitle = document.getElementById('existingInstrumentTitle
 const existingInstrumentDetails = document.getElementById('existingInstrumentDetails');
 const activeMonitorList = document.getElementById('activeMonitorList');
 const activeMonitorEmpty = document.getElementById('activeMonitorEmpty');
+const syncMonitorPlansButton = document.getElementById('syncMonitorPlansButton');
 const floatingMonitorButton = document.createElement('button');
 
 let dashboardReady = false;
@@ -123,32 +124,6 @@ async function publishCurrentStockPriceUpdate(stockPayload) {
     });
   } catch (_error) {
     // Non-fatal if no listener is active.
-  }
-
-  try {
-    const response = await chrome.runtime.sendMessage({
-      type: 'SAVE_INSTRUMENT_PRICE_SNAPSHOT',
-      payload: stockPayload,
-    });
-
-    if (response?.ok && response?.data?.saved) {
-      console.info('[StopLossExtension popup] price-snapshot/route succeeded', {
-        ticker: response.data.instrument?.ticker ?? ticker,
-        snapshotId: response.data.snapshot?.id ?? null,
-        capturedAt: response.data.snapshot?.capturedAt ?? fetchedAt,
-        marketPrice: response.data.snapshot?.priceText ?? stockPayload?.currentPriceText ?? price,
-      });
-    } else {
-      console.warn('[StopLossExtension popup] price-snapshot/route did not save a snapshot', {
-        ticker,
-        response,
-      });
-    }
-  } catch (_error) {
-    console.warn('[StopLossExtension popup] price-snapshot/route failed', {
-      ticker,
-      price,
-    });
   }
 }
 
@@ -276,7 +251,24 @@ function showCurrentStockPanel(stockPayload) {
   ensureExistingInstrumentPanelVisible();
 }
 
-async function refreshMonitoringPlans(currentTicker) {
+async function loadMonitoringPlansFromStorage(currentTicker) {
+  const storage = await chrome.storage.local.get(['floatingMonitorState']);
+  const floatingMonitorState = storage?.floatingMonitorState ?? {};
+
+  latestMonitoringPlans = Array.isArray(floatingMonitorState?.plans) ? floatingMonitorState.plans : [];
+  latestMonitorTicker = normalizeTickerValue(currentTicker);
+  activeMonitorEmpty.textContent = 'No active monitors found.';
+  showMonitoringPlans(latestMonitoringPlans, { currentTicker });
+  updateFloatingMonitorButton();
+  ensureExistingInstrumentPanelVisible();
+}
+
+async function syncMonitoringPlansFromServer(currentTicker) {
+  if (syncMonitorPlansButton) {
+    syncMonitorPlansButton.disabled = true;
+    syncMonitorPlansButton.textContent = 'Syncing...';
+  }
+
   let response;
   try {
     response = await chrome.runtime.sendMessage({
@@ -285,31 +277,39 @@ async function refreshMonitoringPlans(currentTicker) {
   } catch (error) {
     activeMonitorList.replaceChildren();
     activeMonitorEmpty.hidden = false;
-    activeMonitorEmpty.textContent = toDisplayError(error, 'Could not load active monitors.');
+    activeMonitorEmpty.textContent = toDisplayError(error, 'Could not sync active monitors.');
     latestMonitoringPlans = [];
     latestMonitorTicker = normalizeTickerValue(currentTicker);
     updateFloatingMonitorButton();
     ensureExistingInstrumentPanelVisible();
+    if (syncMonitorPlansButton) {
+      syncMonitorPlansButton.disabled = false;
+      syncMonitorPlansButton.textContent = 'Sync monitors from app';
+    }
     return;
   }
 
   if (!response?.ok) {
     activeMonitorList.replaceChildren();
     activeMonitorEmpty.hidden = false;
-    activeMonitorEmpty.textContent = response?.error ?? 'Could not load active monitors.';
+    activeMonitorEmpty.textContent = response?.error ?? 'Could not sync active monitors.';
     latestMonitoringPlans = [];
     latestMonitorTicker = normalizeTickerValue(currentTicker);
     updateFloatingMonitorButton();
     ensureExistingInstrumentPanelVisible();
+    if (syncMonitorPlansButton) {
+      syncMonitorPlansButton.disabled = false;
+      syncMonitorPlansButton.textContent = 'Sync monitors from app';
+    }
     return;
   }
 
-  latestMonitoringPlans = Array.isArray(response.data?.plans) ? response.data.plans : [];
-  latestMonitorTicker = normalizeTickerValue(currentTicker);
-  activeMonitorEmpty.textContent = 'No active monitors found.';
-  showMonitoringPlans(latestMonitoringPlans, { currentTicker });
-  updateFloatingMonitorButton();
-  ensureExistingInstrumentPanelVisible();
+  await loadMonitoringPlansFromStorage(currentTicker);
+
+  if (syncMonitorPlansButton) {
+    syncMonitorPlansButton.disabled = false;
+    syncMonitorPlansButton.textContent = 'Sync monitors from app';
+  }
 }
 
 function isNordnetStockUrl(url) {
@@ -370,7 +370,7 @@ async function inspectCurrentInstrument(tabId) {
   try {
     payloadResponse = await loadCurrentStockPayload(tabId);
   } catch (error) {
-    await refreshMonitoringPlans();
+    await loadMonitoringPlansFromStorage();
     setStatus(
       actionStatus,
       'error',
@@ -382,7 +382,7 @@ async function inspectCurrentInstrument(tabId) {
   }
 
   if (!payloadResponse?.ok) {
-    await refreshMonitoringPlans();
+    await loadMonitoringPlansFromStorage();
     setStatus(
       actionStatus,
       'error',
@@ -396,7 +396,7 @@ async function inspectCurrentInstrument(tabId) {
   currentStockPayload = payloadResponse.payload;
   await publishCurrentStockPriceUpdate(currentStockPayload);
   showCurrentStockPanel(currentStockPayload);
-  await refreshMonitoringPlans(currentStockPayload?.ticker);
+  await loadMonitoringPlansFromStorage(currentStockPayload?.ticker);
 
   const existingResponse = await chrome.runtime.sendMessage({
     type: 'CHECK_INSTRUMENT_EXISTS',
@@ -404,7 +404,7 @@ async function inspectCurrentInstrument(tabId) {
   });
 
   if (!existingResponse?.ok) {
-    await refreshMonitoringPlans(currentStockPayload?.ticker);
+    await loadMonitoringPlansFromStorage(currentStockPayload?.ticker);
     setStatus(actionStatus, 'error', existingResponse?.error ?? 'Could not check existing instruments.');
     stockTabReady = false;
     updateImportButton();
@@ -426,12 +426,12 @@ async function inspectCurrentInstrument(tabId) {
     ];
 
     showExistingInstrumentPanel(instrument, summary);
-    await refreshMonitoringPlans(instrument?.ticker ?? currentStockPayload?.ticker);
+    await loadMonitoringPlansFromStorage(instrument?.ticker ?? currentStockPayload?.ticker);
     setStatus(actionStatus, 'info', 'Show Current monitors.');
   } else {
     currentInstrumentExists = false;
     showCurrentStockPanel(currentStockPayload);
-    await refreshMonitoringPlans(currentStockPayload?.ticker);
+    await loadMonitoringPlansFromStorage(currentStockPayload?.ticker);
     setStatus(actionStatus, 'info', 'Show current');
   }
 
@@ -475,7 +475,7 @@ async function checkActiveTab() {
   } else {
     activeTab.textContent = url || 'No active tab detected';
     hideExistingInstrumentPanel();
-    await refreshMonitoringPlans();
+    await loadMonitoringPlansFromStorage();
     setStatus(
       actionStatus,
       'info',
@@ -519,7 +519,7 @@ async function importCurrentStock() {
 
   hideExistingInstrumentPanel();
   showCurrentStockPanel(payload);
-  await refreshMonitoringPlans(payload?.ticker);
+  await loadMonitoringPlansFromStorage(payload?.ticker);
 
   const importResponse = await chrome.runtime.sendMessage({
     type: 'IMPORT_INSTRUMENT',
@@ -529,7 +529,7 @@ async function importCurrentStock() {
   if (importResponse?.requiresConfirmation) {
     currentInstrumentExists = true;
     showExistingInstrumentPanel(importResponse.existingInstrument, importResponse.existingInstrumentSummary);
-    await refreshMonitoringPlans(importResponse.existingInstrument?.ticker ?? payload?.ticker);
+    await loadMonitoringPlansFromStorage(importResponse.existingInstrument?.ticker ?? payload?.ticker);
 
     const shouldUpdate = window.confirm(
       'This instrument already exists in the local database. Select OK to update the existing entry or Cancel to keep it unchanged.',
@@ -552,7 +552,7 @@ async function importCurrentStock() {
     if (confirmedImportResponse?.ok) {
       const result = confirmedImportResponse.data;
       const instrument = result?.instrument;
-      await refreshMonitoringPlans(instrument?.ticker ?? payload?.ticker);
+      await loadMonitoringPlansFromStorage(instrument?.ticker ?? payload?.ticker);
       setStatus(
         actionStatus,
         'ok',
@@ -570,7 +570,7 @@ async function importCurrentStock() {
     const result = importResponse.data;
     const instrument = result?.instrument;
     currentInstrumentExists = !result?.created;
-    await refreshMonitoringPlans(instrument?.ticker ?? payload?.ticker);
+    await loadMonitoringPlansFromStorage(instrument?.ticker ?? payload?.ticker);
     setStatus(
       actionStatus,
       'ok',
@@ -602,6 +602,10 @@ importButton.addEventListener('click', () => {
 
 resetButton.addEventListener('click', () => {
   resetExtensionState();
+});
+
+syncMonitorPlansButton?.addEventListener('click', () => {
+  void syncMonitoringPlansFromServer(currentStockPayload?.ticker ?? latestMonitorTicker);
 });
 
 floatingMonitorButton.addEventListener('click', () => {

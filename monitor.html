@@ -180,20 +180,104 @@
 
       .minimal-panel {
         display: none;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
+        flex-direction: column;
+        gap: 10px;
         padding: 10px 12px;
       }
 
+      .minimal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        width: 100%;
+      }
+
+      .minimal-title {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+      }
+
+      .minimal-title-text {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #486581;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .minimal-header-badge {
+        display: inline-flex;
+        align-items: center;
+        max-width: fit-content;
+        padding: 2px 6px;
+        border-radius: 999px;
+        background: #d9e2ec;
+        color: #334e68;
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 1.2;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .icon-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border: 0;
+        border-radius: 999px;
+        background: #d9e2ec;
+        color: #102a43;
+        cursor: pointer;
+        padding: 0;
+      }
+
+      .icon-button svg {
+        width: 16px;
+        height: 16px;
+        fill: currentColor;
+      }
+
+      .minimal-list {
+        width: 100%;
+        display: grid;
+        gap: 6px;
+      }
+
+      .minimal-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        align-items: center;
+        padding: 8px 10px;
+        border-radius: 10px;
+        background: #f8fbfc;
+        border: 1px solid #d9e2ec;
+      }
+
+      .minimal-row.is-current {
+        background: #f0f9ff;
+      }
+
+      .minimal-row.is-hit {
+        background: #fff3bf;
+      }
+
       .minimal-symbol {
-        font-size: 18px;
+        font-size: 15px;
         font-weight: 700;
         line-height: 1.2;
       }
 
       .minimal-price {
-        font-size: 22px;
+        font-size: 16px;
         font-weight: 700;
         line-height: 1;
         font-variant-numeric: tabular-nums;
@@ -203,12 +287,6 @@
       .minimal-meta {
         color: #627d98;
         font-size: 11px;
-        margin-top: 4px;
-      }
-
-      .minimal-empty {
-        color: #627d98;
-        font-size: 13px;
       }
 
       body.minimal-mode .full-panel {
@@ -222,21 +300,47 @@
   </head>
   <body>
     <main>
-      <div class="card">
-        <div id="minimalPanel" class="minimal-panel" aria-live="polite">
-          <div>
-            <div id="minimalTicker" class="minimal-symbol">-</div>
-            <div id="minimalMeta" class="minimal-meta">Waiting for price updates</div>
+        <div class="card">
+          <div id="minimalPanel" class="minimal-panel" aria-live="polite">
+          <div class="minimal-header">
+            <div class="minimal-title">
+              <div id="minimalTraderLabel" class="minimal-title-text">-</div>
+              <div id="minimalLastUpdatedBadge" class="minimal-header-badge">Waiting for price updates</div>
+            </div>
+            <button
+              id="toggleMonitorViewCompact"
+              class="icon-button"
+              type="button"
+              aria-label="Expand to normal view"
+              title="Expand to normal view"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M4 9V4h5v2H6v3H4zm10-5h6v6h-2V6h-4V4zM4 15h2v3h3v2H4v-5zm14 3v-3h2v5h-5v-2h3z"></path>
+              </svg>
+            </button>
           </div>
-          <div id="minimalPrice" class="minimal-price">-</div>
+          <div id="minimalList" class="minimal-list">
+            <div class="minimal-meta">Waiting for price updates</div>
+          </div>
         </div>
         <div class="full-panel">
         <h1>Active monitors for trader: <span id="selectedTraderLabel">-</span></h1>
         <p id="monitorSummary">Loading active monitors...</p>
         <div class="toolbar">
-          <span class="muted">Background quotes plus latest saved server snapshots.</span>
+          <span class="muted">Background quotes are stored locally and mirrored into the app.</span>
           <div class="toolbar-actions">
-            <button id="toggleMonitorView" class="secondary" type="button">Minimal view</button>
+            <button id="syncMonitorPlans" class="secondary" type="button">Sync monitors</button>
+            <button
+              id="toggleMonitorView"
+              class="secondary icon-button"
+              type="button"
+              aria-label="Switch to minimal view"
+              title="Switch to minimal view"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M4 4h16v7H4V4zm0 9h7v7H4v-7zm9 0h7v7h-7v-7z"></path>
+              </svg>
+            </button>
             <button id="refreshMonitorPrices" type="button">Refresh prices</button>
           </div>
         </div>

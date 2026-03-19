@@ -4,12 +4,14 @@ const messageList = document.getElementById('messageList');
 const messageEmpty = document.getElementById('messageEmpty');
 const lastUpdatedValue = document.getElementById('lastUpdatedValue');
 const refreshButton = document.getElementById('refreshMonitorPrices');
+const syncMonitorPlansButton = document.getElementById('syncMonitorPlans');
 const monitorVersion = document.getElementById('monitorVersion');
 const selectedTraderLabel = document.getElementById('selectedTraderLabel');
 const toggleViewButton = document.getElementById('toggleMonitorView');
-const minimalTicker = document.getElementById('minimalTicker');
-const minimalPrice = document.getElementById('minimalPrice');
-const minimalMeta = document.getElementById('minimalMeta');
+const toggleCompactViewButton = document.getElementById('toggleMonitorViewCompact');
+const minimalList = document.getElementById('minimalList');
+const minimalTraderLabel = document.getElementById('minimalTraderLabel');
+const minimalLastUpdatedBadge = document.getElementById('minimalLastUpdatedBadge');
 const SELECTED_TRADER_ID_STORAGE_KEY = 'stoploss-selected-trader-id';
 const SELECTED_TRADER_NAME_STORAGE_KEY = 'stoploss-selected-trader-name';
 const MONITOR_VIEW_MODE_KEY = 'viewMode';
@@ -123,6 +125,28 @@ function syncSelectedTraderLabel() {
   if (selectedTraderLabel) {
     selectedTraderLabel.textContent = getSelectedTraderLabel();
   }
+
+  if (minimalTraderLabel) {
+    minimalTraderLabel.textContent = getSelectedTraderLabel();
+    minimalTraderLabel.title = getSelectedTraderLabel();
+  }
+}
+
+function syncLastUpdatedLabel(value) {
+  const formatted =
+    typeof value === 'string' && value && Number.isNaN(new Date(value).getTime())
+      ? value
+      : formatTimestamp(value);
+
+  if (lastUpdatedValue) {
+    lastUpdatedValue.textContent = formatted;
+    lastUpdatedValue.title = `Monitor version ${manifestVersion}`;
+  }
+
+  if (minimalLastUpdatedBadge) {
+    minimalLastUpdatedBadge.textContent = formatted;
+    minimalLastUpdatedBadge.title = `Monitor version ${manifestVersion}`;
+  }
 }
 
 function getPreferredCurrentPlan() {
@@ -150,37 +174,49 @@ function getStoredPriceEntryForTicker(ticker, priceMap) {
 }
 
 function updateMinimalPanel(priceMap = {}) {
-  const plan = getPreferredCurrentPlan();
-
-  if (!plan) {
-    if (minimalTicker) {
-      minimalTicker.textContent = 'No monitor';
-    }
-    if (minimalPrice) {
-      minimalPrice.textContent = '-';
-    }
-    if (minimalMeta) {
-      minimalMeta.textContent = 'No active monitors found';
-    }
+  if (!minimalList) {
     return;
   }
 
-  const ticker = normalizeTicker(plan?.instrument?.ticker) || '-';
-  const entry = getStoredPriceEntryForTicker(ticker, priceMap);
-  const price = entry?.ok ? Number(entry.price) : null;
-  const isCurrent = monitorCurrentTicker && tickersMatch(ticker, monitorCurrentTicker);
-  const status = isTriggerHit(plan, price) ? 'Trigger hit' : isCurrent ? 'Current' : 'Watching';
-  const currency = String(plan?.instrument?.currency ?? '').trim();
+  minimalList.replaceChildren();
 
-  if (minimalTicker) {
-    minimalTicker.textContent = ticker;
+  if (monitorPlans.length === 0) {
+    const emptyState = document.createElement('div');
+    emptyState.className = 'minimal-meta';
+    emptyState.textContent = 'No active monitors found';
+    minimalList.append(emptyState);
+    return;
   }
-  if (minimalPrice) {
-    minimalPrice.textContent = entry?.ok ? `${formatPrice(price)}${currency ? ` ${currency}` : ''}` : '-';
-  }
-  if (minimalMeta) {
-    minimalMeta.textContent = `${status}${entry?.fetchedAt ? ` | ${formatTimestamp(entry.fetchedAt)}` : ''}`;
-  }
+
+  const sortedPlans = getPreferredCurrentPlan()
+    ? [
+        ...monitorPlans.filter((plan) => tickersMatch(plan?.instrument?.ticker, monitorCurrentTicker)),
+        ...monitorPlans.filter((plan) => !tickersMatch(plan?.instrument?.ticker, monitorCurrentTicker)),
+      ]
+    : [...monitorPlans];
+
+  minimalList.append(
+    ...sortedPlans.map((plan) => {
+      const ticker = normalizeTicker(plan?.instrument?.ticker) || '-';
+      const entry = getStoredPriceEntryForTicker(ticker, priceMap);
+      const price = entry?.ok ? Number(entry.price) : null;
+      const currency = String(plan?.instrument?.currency ?? '').trim();
+      const isCurrent = monitorCurrentTicker && tickersMatch(ticker, monitorCurrentTicker);
+      const hit = isTriggerHit(plan, price);
+      const row = document.createElement('div');
+      row.className = 'minimal-row';
+      row.classList.toggle('is-current', Boolean(isCurrent));
+      row.classList.toggle('is-hit', hit);
+      row.innerHTML = `
+        <div>
+          <div class="minimal-symbol">${escapeHtml(ticker)}</div>
+          <div class="minimal-meta">${isCurrent ? 'Current' : 'Watching'}</div>
+        </div>
+        <div class="minimal-price">${escapeHtml(entry?.ok ? `${formatPrice(price)}${currency ? ` ${currency}` : ''}` : '-')}</div>
+      `;
+      return row;
+    }),
+  );
 }
 
 async function persistViewMode() {
@@ -198,13 +234,16 @@ function applyViewMode() {
   document.body.classList.toggle('minimal-mode', monitorViewMode === MONITOR_VIEW_MODE_MINIMAL);
 
   if (toggleViewButton) {
-    toggleViewButton.textContent =
-      monitorViewMode === MONITOR_VIEW_MODE_MINIMAL ? 'Normal view' : 'Minimal view';
+    toggleViewButton.title = monitorViewMode === MONITOR_VIEW_MODE_MINIMAL ? 'Expand to normal view' : 'Switch to minimal view';
+    toggleViewButton.setAttribute(
+      'aria-label',
+      monitorViewMode === MONITOR_VIEW_MODE_MINIMAL ? 'Expand to normal view' : 'Switch to minimal view',
+    );
   }
 
   const nextSize =
     monitorViewMode === MONITOR_VIEW_MODE_MINIMAL
-      ? MINIMAL_WINDOW_SIZE
+      ? { width: 300, height: Math.max(160, 92 + (monitorPlans.length * 54)) }
       : FULL_WINDOW_SIZE;
 
   if (typeof window.resizeTo === 'function') {
@@ -338,10 +377,7 @@ function applyPrices(priceMap) {
     hitState.set(index, hit);
   });
 
-  if (lastUpdatedValue) {
-    lastUpdatedValue.textContent = formatTimestamp(newestFetchedAt);
-    lastUpdatedValue.title = `Monitor version ${manifestVersion}`;
-  }
+  syncLastUpdatedLabel(newestFetchedAt);
 
   updateMinimalPanel(latestPriceMap);
 }
@@ -439,26 +475,37 @@ async function loadMonitorState() {
   renderPlans();
 }
 
-async function refreshMonitorPlans(options = {}) {
+async function loadMonitorPlansFromStorage(options = {}) {
+  try {
+    await loadMonitorState();
+    return true;
+  } catch (error) {
+    console.error('[StopLossExtension monitor] loadMonitorPlansFromStorage exception', error);
+    if (!options?.silent) {
+      syncLastUpdatedLabel('Failed to load local monitors');
+    }
+    return false;
+  }
+}
+
+async function syncMonitorPlansFromServer(options = {}) {
   try {
     const response = await chrome.runtime.sendMessage({
       type: 'FETCH_MONITORING_PLANS',
     });
 
     if (!response?.ok) {
-      if (!options?.silent && lastUpdatedValue) {
-        lastUpdatedValue.textContent = response?.error ?? 'Failed to load active monitors';
+      if (!options?.silent) {
+        syncLastUpdatedLabel(response?.error ?? 'Failed to load active monitors');
       }
       return false;
     }
 
-    monitorPlans = Array.isArray(response.data?.plans) ? response.data.plans : [];
-    renderPlans();
-    return true;
+    return loadMonitorPlansFromStorage(options);
   } catch (error) {
-    console.error('[StopLossExtension monitor] refreshMonitorPlans exception', error);
-    if (!options?.silent && lastUpdatedValue) {
-      lastUpdatedValue.textContent = 'Failed to load active monitors';
+    console.error('[StopLossExtension monitor] syncMonitorPlansFromServer exception', error);
+    if (!options?.silent) {
+      syncLastUpdatedLabel('Failed to sync active monitors');
     }
     return false;
   }
@@ -483,7 +530,6 @@ async function refreshPrices(options = {}) {
       tickers: monitorPlans.map((plan) => normalizeTicker(plan?.instrument?.ticker)).filter(Boolean),
     });
 
-    await refreshMonitorPlans({ silent: options?.silent });
     const refreshResponse = await chrome.runtime.sendMessage({ type: 'REFRESH_PRICES' });
 
     backgroundPriceMap = refreshResponse?.data?.prices ?? {};
@@ -495,33 +541,19 @@ async function refreshPrices(options = {}) {
       applyPrices(backgroundPriceMap);
     }
 
-    const [storedPrices, serverResponse] = await Promise.all([
-      readStoredPrices(),
-      chrome.runtime.sendMessage({
-        type: 'FETCH_LATEST_PRICE_SNAPSHOTS',
-      }),
-    ]);
-
-    const mergedPrices = mergePriceMaps(
-      toPriceMapFromServer(serverResponse),
-      mergePriceMaps(backgroundPriceMap, storedPrices),
-    );
+    const storedPrices = await readStoredPrices();
+    const mergedPrices = mergePriceMaps(backgroundPriceMap, storedPrices);
 
     console.info('[StopLossExtension monitor] refreshPrices apply', {
       appliedTickers: Object.keys(mergedPrices),
       refreshOk: Boolean(refreshResponse?.ok),
-      serverOk: Boolean(serverResponse?.ok),
     });
 
     applyPrices(mergedPrices);
-
-    if (!serverResponse?.ok && !options?.silent && lastUpdatedValue) {
-      lastUpdatedValue.textContent = serverResponse?.error ?? 'Failed to load saved prices';
-    }
   } catch (error) {
     console.error('[StopLossExtension monitor] refreshPrices exception', error);
-    if (!options?.silent && lastUpdatedValue) {
-      lastUpdatedValue.textContent = 'Failed to refresh prices';
+    if (!options?.silent) {
+      syncLastUpdatedLabel('Failed to refresh prices');
     }
   } finally {
     refreshInFlight = false;
@@ -563,11 +595,25 @@ refreshButton?.addEventListener('click', () => {
   void refreshPrices();
 });
 
+syncMonitorPlansButton?.addEventListener('click', async () => {
+  syncMonitorPlansButton.disabled = true;
+  syncMonitorPlansButton.textContent = 'Syncing...';
+  await syncMonitorPlansFromServer();
+  syncMonitorPlansButton.disabled = false;
+  syncMonitorPlansButton.textContent = 'Sync monitors';
+});
+
 toggleViewButton?.addEventListener('click', () => {
   monitorViewMode =
     monitorViewMode === MONITOR_VIEW_MODE_MINIMAL
       ? MONITOR_VIEW_MODE_FULL
       : MONITOR_VIEW_MODE_MINIMAL;
+  applyViewMode();
+  void persistViewMode();
+});
+
+toggleCompactViewButton?.addEventListener('click', () => {
+  monitorViewMode = MONITOR_VIEW_MODE_FULL;
   applyViewMode();
   void persistViewMode();
 });
@@ -580,7 +626,7 @@ window.addEventListener('beforeunload', () => {
 
 void loadMonitorState().then(async () => {
   applyPrices(await readStoredPrices());
-  await refreshMonitorPlans({ silent: true });
+  await loadMonitorPlansFromStorage({ silent: true });
   void refreshPrices({ silent: true });
   refreshIntervalId = window.setInterval(() => {
     void refreshPrices({ silent: true });
