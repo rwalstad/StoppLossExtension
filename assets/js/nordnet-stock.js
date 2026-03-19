@@ -786,6 +786,20 @@
     container.style.bottom = 'auto';
   }
 
+  function clampAndApplyCurrentUiPosition(container, preferredPosition = null) {
+    const fallbackPosition = preferredPosition || readUiPosition() || getDefaultUiPosition();
+    const rect = container.getBoundingClientRect();
+    const clampedPosition = clampUiPosition(
+      fallbackPosition.top,
+      fallbackPosition.left,
+      rect.width || 200,
+      rect.height || 44,
+    );
+    applyUiPosition(container, clampedPosition);
+    writeUiPosition(clampedPosition);
+    return clampedPosition;
+  }
+
   function getDefaultUiPosition() {
     return clampUiPosition(12, Math.max(8, window.innerWidth - 220), 200, 44);
   }
@@ -1746,8 +1760,13 @@
     container.appendChild(toggleRow);
     container.appendChild(panel);
     document.body.appendChild(container);
+    clampAndApplyCurrentUiPosition(container, initialPosition);
 
     const dragBehavior = attachDragBehavior(container, [toggle, panelHeader]);
+
+    window.addEventListener('resize', () => {
+      clampAndApplyCurrentUiPosition(container);
+    });
 
     function refreshLivePrice() {
       const currentPrice = extractCurrentMarketPrice();
