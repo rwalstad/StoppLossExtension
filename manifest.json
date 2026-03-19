@@ -1,9 +1,9 @@
 {
   "name": "StopLoss Nordnet Import",
   "description": "Import Nordnet instruments into the local StopLoss dashboard",
-  "version": "1.2.35",
+  "version": "1.2.36",
   "manifest_version": 3,
-  "permissions": ["storage", "tabs", "scripting", "alarms"],
+  "permissions": ["storage", "tabs", "scripting", "alarms", "windows"],
   "host_permissions": [
     "https://www.nordnet.no/*",
     "http://localhost:3400/*",

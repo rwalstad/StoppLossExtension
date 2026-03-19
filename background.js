@@ -531,6 +531,29 @@ async function openFloatingMonitorWindow() {
   const url = chrome.runtime.getURL('monitor.html');
 
   return new Promise((resolve) => {
+    const handleTabFallback = () => {
+      chrome.tabs.create({ url, active: true }, (createdTab) => {
+        if (chrome.runtime.lastError) {
+          resolve({
+            ok: false,
+            error: chrome.runtime.lastError.message ?? 'Failed to open floating monitor.',
+          });
+          return;
+        }
+
+        resolve({
+          ok: true,
+          tabId: createdTab?.id ?? null,
+          fallback: 'tab',
+        });
+      });
+    };
+
+    if (!chrome.windows?.create) {
+      handleTabFallback();
+      return;
+    }
+
     chrome.windows.create(
       {
         url,
@@ -541,10 +564,7 @@ async function openFloatingMonitorWindow() {
       },
       (createdWindow) => {
         if (chrome.runtime.lastError) {
-          resolve({
-            ok: false,
-            error: chrome.runtime.lastError.message ?? 'Failed to open floating monitor.',
-          });
+          handleTabFallback();
           return;
         }
 
