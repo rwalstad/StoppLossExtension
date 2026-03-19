@@ -33,6 +33,7 @@ let refreshInFlight = false;
 let refreshIntervalId = null;
 let monitorViewMode = MONITOR_VIEW_MODE_FULL;
 let latestPriceMap = {};
+let placingPlanKey = '';
 
 if (monitorVersion) {
   monitorVersion.textContent = manifestVersion;
@@ -198,6 +199,93 @@ function getStoredPriceEntryForTicker(ticker, priceMap) {
   return matchedKey ? priceMap[matchedKey] : null;
 }
 
+function getSavedOrder(plan) {
+  const savedOrder = plan?.pendingOrder;
+  if (!savedOrder) {
+    return null;
+  }
+
+  const quantity = Number(savedOrder.quantity);
+  const price = Number(savedOrder.price);
+  if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price) || price <= 0) {
+    return null;
+  }
+
+  return savedOrder;
+}
+
+function hasPlaceableSavedOrder(plan) {
+  return Boolean(getSavedOrder(plan) && String(plan?.instrument?.sourceUrl ?? '').trim());
+}
+
+function getSavedOrderSummary(plan) {
+  const savedOrder = getSavedOrder(plan);
+  if (!savedOrder) {
+    return 'Monitoring only';
+  }
+
+  const status = String(savedOrder.status ?? '').trim().toLowerCase() || 'saved';
+  const quantity = Number(savedOrder.quantity);
+  const price = Number(savedOrder.price);
+  return `${savedOrder.side} ${formatPrice(price)} x ${formatPrice(quantity)} (${status})`;
+}
+
+function getPlanActionLabel(plan) {
+  const savedOrder = getSavedOrder(plan);
+  if (!savedOrder) {
+    return 'No order';
+  }
+
+  return savedOrder.status === 'CANCELLED' ? 'Replace order' : 'Place order';
+}
+
+async function placeSavedOrder(plan, price) {
+  if (!hasPlaceableSavedOrder(plan)) {
+    window.alert('This monitor does not have a saved order to place.');
+    return;
+  }
+
+  const savedOrder = getSavedOrder(plan);
+  const ticker = normalizeTicker(plan?.instrument?.ticker) || 'instrument';
+  const confirmMessage = [
+    `${ticker} has hit the trigger at ${formatPrice(price)} ${plan?.instrument?.currency ?? ''}.`.trim(),
+    '',
+    `${savedOrder.side} ${formatPrice(Number(savedOrder.price))} x ${formatPrice(Number(savedOrder.quantity))}`,
+    savedOrder.status === 'CANCELLED'
+      ? 'The last saved Nordnet day order was cancelled. Replace it now?'
+      : 'Place the saved Nordnet order now?',
+  ].join('\n');
+
+  if (!window.confirm(confirmMessage)) {
+    return;
+  }
+
+  const planKey = getPlanKey(plan);
+  placingPlanKey = planKey;
+  renderPlans();
+  applyPrices(latestPriceMap);
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: 'PLACE_MONITORED_ORDER',
+      plan,
+    });
+
+    if (!response?.ok) {
+      throw new Error(response?.error ?? 'Failed to place the saved Nordnet order.');
+    }
+
+    await syncMonitorPlansFromServer({ silent: true });
+    window.alert(response?.message ?? 'Saved Nordnet order submitted.');
+  } catch (error) {
+    window.alert(error instanceof Error ? error.message : 'Failed to place the saved Nordnet order.');
+  } finally {
+    placingPlanKey = '';
+    renderPlans();
+    applyPrices(latestPriceMap);
+  }
+}
+
 function updateMinimalPanel(priceMap = {}) {
   if (!minimalList) {
     return;
@@ -318,7 +406,7 @@ function renderPlans() {
 
   if (monitorPlans.length === 0) {
     const emptyRow = document.createElement('tr');
-    emptyRow.innerHTML = '<td colspan="6" class="muted">No active monitors found.</td>';
+    emptyRow.innerHTML = '<td colspan="7" class="muted">No active monitors found.</td>';
     monitorTableBody.append(emptyRow);
     if (monitorSummary) {
       monitorSummary.textContent = `No active monitors found for trader: ${getSelectedTraderLabel()}.`;
@@ -342,7 +430,8 @@ function renderPlans() {
       <td>${escapeHtml(condition)} ${escapeHtml(plan?.triggerPrice ?? '-')}</td>
       <td data-role="price">-</td>
       <td>${escapeHtml(plan?.instrument?.currency ?? '-')}</td>
-      <td data-role="status">Watching</td>
+      <td data-role="status">Watching<span class="status-subline">${escapeHtml(getSavedOrderSummary(plan))}</span></td>
+      <td data-role="action"></td>
     `;
 
     monitorTableBody.append(row);
@@ -376,6 +465,7 @@ function applyPrices(priceMap) {
     const previousHit = hitState.get(index) === true;
     const priceCell = row.querySelector('[data-role="price"]');
     const statusCell = row.querySelector('[data-role="status"]');
+    const actionCell = row.querySelector('[data-role="action"]');
 
     if (priceCell) {
       priceCell.textContent = entry?.ok ? formatPrice(price) : '-';
@@ -390,9 +480,17 @@ function applyPrices(priceMap) {
     row.classList.toggle('is-hit', hit);
 
     if (statusCell) {
-      statusCell.textContent = hit ? 'Trigger hit' : 'Watching';
+      statusCell.innerHTML = `${hit ? 'Trigger hit' : 'Watching'}<span class="status-subline">${escapeHtml(getSavedOrderSummary(plan))}</span>`;
       statusCell.className = hit ? 'status-hit' : '';
       statusCell.setAttribute('data-role', 'status');
+    }
+
+    if (actionCell) {
+      const canPlace = hit && hasPlaceableSavedOrder(plan);
+      const isPlacing = placingPlanKey === getPlanKey(plan);
+      actionCell.innerHTML = canPlace
+        ? `<button type="button" class="table-action" data-action="place-saved-order" data-plan-index="${index}" ${isPlacing ? 'disabled' : ''}>${escapeHtml(isPlacing ? 'Placing...' : getPlanActionLabel(plan))}</button>`
+        : '<span class="muted">Waiting</span>';
     }
 
     if (hit && !previousHit) {
@@ -618,6 +716,30 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 refreshButton?.addEventListener('click', () => {
   console.info('[StopLossExtension monitor] Refresh prices button clicked');
   void refreshPrices();
+});
+
+monitorTableBody?.addEventListener('click', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) {
+    return;
+  }
+
+  const button = target.closest('[data-action="place-saved-order"]');
+  if (!(button instanceof HTMLButtonElement)) {
+    return;
+  }
+
+  const index = Number(button.dataset.planIndex);
+  const plan = monitorPlans[index];
+  const ticker = normalizeTicker(plan?.instrument?.ticker);
+  const entry = getStoredPriceEntryForTicker(ticker, latestPriceMap);
+  const price = entry?.ok ? Number(entry.price) : null;
+
+  if (!plan || typeof price !== 'number' || !Number.isFinite(price)) {
+    return;
+  }
+
+  void placeSavedOrder(plan, price);
 });
 
 syncMonitorPlansButton?.addEventListener('click', async () => {

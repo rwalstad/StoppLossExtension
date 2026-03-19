@@ -2385,6 +2385,139 @@
     void refreshDashboardState();
   }
 
+
+  function dispatchFieldEvents(input) {
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+  }
+
+  function setInputElementValue(input, value) {
+    const prototype = Object.getPrototypeOf(input);
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+    if (descriptor?.set) {
+      descriptor.set.call(input, value);
+    } else {
+      input.value = value;
+    }
+    dispatchFieldEvents(input);
+  }
+
+  function setFormattedNumberField(inputId, value) {
+    const input = document.getElementById(inputId);
+    if (!(input instanceof HTMLInputElement)) {
+      return false;
+    }
+
+    const wrapper = input.closest('div');
+    const hiddenInput = wrapper?.querySelector('input[type="hidden"]');
+    const textValue = String(value);
+
+    setInputElementValue(input, textValue);
+    if (hiddenInput instanceof HTMLInputElement) {
+      setInputElementValue(hiddenInput, textValue);
+    }
+
+    return true;
+  }
+
+  function matchesButtonText(button, labels) {
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      return false;
+    }
+
+    const text = compactText(button.textContent ?? '').toLowerCase();
+    const ariaLabel = compactText(button.getAttribute('aria-label') ?? '').toLowerCase();
+    return labels.some((label) => text === label || ariaLabel === label || text.includes(label) || ariaLabel.includes(label));
+  }
+
+  function findActionButton(labels, options = {}) {
+    const scope = options.dialogOnly
+      ? [...document.querySelectorAll('[role="dialog"] button, dialog button')]
+      : [...document.querySelectorAll('button')].filter((button) => !button.closest('[role="dialog"], dialog'));
+
+    const matches = scope.filter((button) => matchesButtonText(button, labels));
+    return matches.at(-1) ?? null;
+  }
+
+  async function waitForActionButton(labels, options = {}) {
+    const timeoutMs = options.timeoutMs ?? 6000;
+    const start = Date.now();
+
+    while (Date.now() - start < timeoutMs) {
+      const button = findActionButton(labels, options);
+      if (button) {
+        return button;
+      }
+
+      await new Promise((resolve) => window.setTimeout(resolve, 150));
+    }
+
+    return null;
+  }
+
+  async function executeSavedOrder(plan) {
+    const savedOrder = plan?.pendingOrder;
+    if (!savedOrder?.side) {
+      return {
+        ok: false,
+        error: 'No saved order was attached to this monitoring plan.',
+      };
+    }
+
+    const expectedSide = String(savedOrder.side).toUpperCase();
+    const orderForm = extractOrderForm();
+    if (!orderForm || orderForm.side !== expectedSide) {
+      return {
+        ok: false,
+        error: `Open the Nordnet ${expectedSide.toLowerCase()} ticket before placing this saved order.`,
+      };
+    }
+
+    const quantity = Number(savedOrder.quantity);
+    const price = Number(savedOrder.price);
+    if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price) || price <= 0) {
+      return {
+        ok: false,
+        error: 'Saved order quantity or price is invalid.',
+      };
+    }
+
+    if (!setFormattedNumberField('quantity', quantity) || !setFormattedNumberField('price', price)) {
+      return {
+        ok: false,
+        error: 'Could not populate the Nordnet order form.',
+      };
+    }
+
+    await new Promise((resolve) => window.setTimeout(resolve, 200));
+
+    const sideLabels = expectedSide === 'BUY' ? ['kjøp', 'kjop'] : ['selg'];
+    const primaryButton = findActionButton(sideLabels, { dialogOnly: false });
+    if (!primaryButton) {
+      return {
+        ok: false,
+        error: `Could not find the Nordnet ${expectedSide.toLowerCase()} button.`,
+      };
+    }
+
+    primaryButton.click();
+
+    const confirmButton = await waitForActionButton(sideLabels, { dialogOnly: true, timeoutMs: 8000 });
+    if (confirmButton) {
+      confirmButton.click();
+      return {
+        ok: true,
+        message: `${savedOrder.status === 'CANCELLED' ? 'Replaced' : 'Submitted'} the saved ${expectedSide.toLowerCase()} order on Nordnet.`,
+      };
+    }
+
+    return {
+      ok: true,
+      message: `Filled the Nordnet ${expectedSide.toLowerCase()} ticket and clicked the primary order button. Confirm the final dialog manually if Nordnet still requires it.`,
+    };
+  }
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === 'GET_STOCK_PAYLOAD') {
       collectStockPayload().then((response) => {
@@ -2401,6 +2534,11 @@
           },
         });
       });
+      return true;
+    }
+
+    if (message?.type === 'EXECUTE_SAVED_ORDER') {
+      executeSavedOrder(message.plan).then(sendResponse);
       return true;
     }
 

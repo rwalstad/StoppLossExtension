@@ -319,6 +319,7 @@ async function savePendingBuyOrder(payload) {
         instrument: responsePayload.instrument,
         monitoringPlan: responsePayload.monitoringPlan,
         sourceUrl: payload?.instrument?.sourceUrl,
+        pendingOrder: responsePayload.order,
       }),
       {
         currentTicker: responsePayload.instrument?.ticker ?? payload?.instrument?.ticker ?? '',
@@ -366,6 +367,7 @@ async function saveMonitoringPlan(payload) {
         instrument: responsePayload.instrument,
         monitoringPlan: responsePayload.monitoringPlan,
         sourceUrl: payload?.instrument?.sourceUrl,
+        pendingOrder: responsePayload.order,
       }),
       {
         currentTicker: responsePayload.instrument?.ticker ?? payload?.instrument?.ticker ?? '',
@@ -376,6 +378,41 @@ async function saveMonitoringPlan(payload) {
   return {
     ok: true,
     status: response.status,
+    data: responsePayload,
+  };
+}
+
+async function rearmSavedOrder(orderId) {
+  const traderId = await getStoredSelectedTraderId();
+  if (!orderId || !traderId) {
+    return {
+      ok: false,
+      error: 'Trader selection is required to refresh the saved order state.',
+    };
+  }
+
+  const response = await fetch(`${APP_BASE_URL}/api/orders/${encodeURIComponent(String(orderId))}`, {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      traderId,
+      status: 'PENDING',
+    }),
+  });
+
+  const responsePayload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    return {
+      ok: false,
+      error: responsePayload?.error ?? 'Failed to refresh the saved order state.',
+    };
+  }
+
+  return {
+    ok: true,
     data: responsePayload,
   };
 }
@@ -577,6 +614,141 @@ async function openFloatingMonitorWindow() {
   });
 }
 
+async function waitForTabComplete(tabId, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(handleUpdated);
+      reject(new Error('Timed out waiting for the Nordnet order page to load.'));
+    }, timeoutMs);
+
+    const handleUpdated = (updatedTabId, changeInfo) => {
+      if (updatedTabId !== tabId || changeInfo.status !== 'complete') {
+        return;
+      }
+
+      clearTimeout(timeoutId);
+      chrome.tabs.onUpdated.removeListener(handleUpdated);
+      resolve();
+    };
+
+    chrome.tabs.onUpdated.addListener(handleUpdated);
+  });
+}
+
+function buildOrderTicketUrl(plan) {
+  const sourceUrl = compactWhitespace(plan?.instrument?.sourceUrl);
+  const side = String(plan?.pendingOrder?.side ?? '').trim().toLowerCase();
+
+  if (!sourceUrl || (side !== 'buy' && side !== 'sell')) {
+    return null;
+  }
+
+  try {
+    const url = new URL(sourceUrl);
+    url.search = '';
+    url.hash = '';
+    url.pathname = url.pathname
+      .replace(/\/order\/(?:buy|sell)(?:\/.*)?$/i, '')
+      .replace(/\/$/, '') + `/order/${side}`;
+    return url.toString();
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function openOrderTicketTab(orderUrl) {
+  const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const activeTab = activeTabs[0];
+
+  const openedTab = await new Promise((resolve) => {
+    if (activeTab?.id && isSupportedNordnetUrl(activeTab.url)) {
+      chrome.tabs.update(activeTab.id, { url: orderUrl, active: true }, resolve);
+      return;
+    }
+
+    chrome.tabs.create({ url: orderUrl, active: true }, resolve);
+  });
+
+  if (!openedTab?.id) {
+    throw new Error('Could not open the Nordnet order ticket.');
+  }
+
+  await waitForTabComplete(openedTab.id);
+  return openedTab.id;
+}
+
+async function sendMessageToTab(tabId, message) {
+  return new Promise((resolve) => {
+    chrome.tabs.sendMessage(tabId, message, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve({
+          ok: false,
+          error: chrome.runtime.lastError.message ?? 'Could not reach the Nordnet tab.',
+          needsInjection: /Receiving end does not exist/i.test(chrome.runtime.lastError.message ?? ''),
+        });
+        return;
+      }
+
+      resolve(response ?? { ok: false, error: 'Could not reach the Nordnet tab.' });
+    });
+  });
+}
+
+async function executeSavedOrderInTab(tabId, plan) {
+  let response = await sendMessageToTab(tabId, {
+    type: 'EXECUTE_SAVED_ORDER',
+    plan,
+  });
+
+  if (!response?.ok && response?.needsInjection) {
+    await ensureContentScriptForTab(tabId);
+    response = await sendMessageToTab(tabId, {
+      type: 'EXECUTE_SAVED_ORDER',
+      plan,
+    });
+  }
+
+  return response;
+}
+
+async function placeMonitoredOrder(plan) {
+  const orderUrl = buildOrderTicketUrl(plan);
+  const savedOrder = plan?.pendingOrder;
+
+  if (!orderUrl || !savedOrder?.side) {
+    return {
+      ok: false,
+      error: 'The monitored plan does not include a saved Nordnet order.',
+    };
+  }
+
+  const tabId = await openOrderTicketTab(orderUrl);
+  const response = await executeSavedOrderInTab(tabId, plan);
+
+  if (!response?.ok) {
+    return {
+      ok: false,
+      error: response?.error ?? 'Failed to submit the saved Nordnet order.',
+    };
+  }
+
+  const rearmResponse = savedOrder?.id ? await rearmSavedOrder(savedOrder.id) : null;
+  if (rearmResponse && !rearmResponse.ok) {
+    return {
+      ok: false,
+      error: rearmResponse.error,
+    };
+  }
+
+  return {
+    ok: true,
+    tabId,
+    message:
+      response?.message ??
+      `${savedOrder.status === 'CANCELLED' ? 'Replaced' : 'Submitted'} the saved ${String(savedOrder.side).toLowerCase()} order on Nordnet.`,
+  };
+}
+
 function formatInstrumentDetail(label, value) {
   if (value === null || value === undefined || value === '') {
     return null;
@@ -764,6 +936,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === 'OPEN_FLOATING_MONITOR') {
     openFloatingMonitorWindow().then(sendResponse);
+    return true;
+  }
+
+  if (message?.type === 'PLACE_MONITORED_ORDER') {
+    placeMonitoredOrder(message.plan).then(sendResponse);
     return true;
   }
 
@@ -995,7 +1172,7 @@ async function syncFloatingMonitorStateFromPlans(plans) {
   }, resolve));
 }
 
-function buildStoredMonitoringPlanEntry({ instrument, monitoringPlan, sourceUrl }) {
+function buildStoredMonitoringPlanEntry({ instrument, monitoringPlan, sourceUrl, pendingOrder }) {
   if (!instrument || !monitoringPlan) {
     return null;
   }
@@ -1009,6 +1186,17 @@ function buildStoredMonitoringPlanEntry({ instrument, monitoringPlan, sourceUrl 
     notes: monitoringPlan.notes ?? null,
     triggeredAt: monitoringPlan.triggeredAt ?? null,
     updatedAt: monitoringPlan.updatedAt ?? new Date().toISOString(),
+    pendingOrder: pendingOrder
+      ? {
+          id: String(pendingOrder.id ?? '').trim(),
+          side: pendingOrder.side ?? '',
+          status: pendingOrder.status ?? 'PENDING',
+          quantity: String(pendingOrder.quantity ?? '').trim(),
+          price: String(pendingOrder.price ?? '').trim(),
+          currency: pendingOrder.currency ?? instrument.currency ?? '',
+          placedAt: pendingOrder.placedAt ?? new Date().toISOString(),
+        }
+      : monitoringPlan.pendingOrder ?? null,
     instrument: {
       id: instrument.id ?? null,
       ticker: instrument.ticker ?? '',
