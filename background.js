@@ -759,58 +759,195 @@ function normalizeMonitorTicker(value) {
   return String(value ?? '').trim().toUpperCase();
 }
 
-function waitForTabLoadComplete(tabId, timeoutMs = 20000) {
-  return new Promise((resolve, reject) => {
-    let timeoutId = null;
+function compactWhitespace(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
 
-    const cleanup = () => {
-      if (timeoutId !== null) {
-        clearTimeout(timeoutId);
+function parseLocaleNumber(value) {
+  const text = compactWhitespace(value);
+  if (!text) {
+    return null;
+  }
+
+  const cleaned = text.replace(/[^\d,.-]/g, '');
+  if (!cleaned) {
+    return null;
+  }
+
+  const lastCommaIndex = cleaned.lastIndexOf(',');
+  const lastDotIndex = cleaned.lastIndexOf('.');
+  const hasComma = lastCommaIndex !== -1;
+  const hasDot = lastDotIndex !== -1;
+
+  let normalized = cleaned;
+
+  if (hasComma && hasDot) {
+    normalized =
+      lastCommaIndex > lastDotIndex
+        ? cleaned.replace(/\./g, '').replace(',', '.')
+        : cleaned.replace(/,/g, '');
+  } else if (hasComma) {
+    const decimalDigits = cleaned.length - lastCommaIndex - 1;
+    normalized =
+      decimalDigits > 0 && decimalDigits <= 4
+        ? cleaned.replace(/\./g, '').replace(',', '.')
+        : cleaned.replace(/,/g, '');
+  } else if (hasDot) {
+    const decimalDigits = cleaned.length - lastDotIndex - 1;
+    normalized = decimalDigits > 0 && decimalDigits <= 4 ? cleaned : cleaned.replace(/\./g, '');
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function decodeHtmlEntities(value) {
+  return String(value ?? '')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+}
+
+function stripHtmlToText(html) {
+  return compactWhitespace(
+    decodeHtmlEntities(
+      String(html ?? '')
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<!--[\s\S]*?-->/g, ' ')
+        .replace(/<[^>]+>/g, ' '),
+    ),
+  );
+}
+
+function extractLatestTradePrice(text) {
+  const normalizedText = compactWhitespace(text);
+  if (!normalizedText) {
+    return null;
+  }
+
+  const latestTradesSection = normalizedText.split(/Siste handler/i)[1] ?? '';
+  const candidateText = latestTradesSection || normalizedText;
+  const tradeMatch = candidateText.match(
+    /\d{1,2}:\d{2}:\d{2}\s+([0-9][0-9\s.,]*)\s+\d/i,
+  );
+
+  if (!tradeMatch) {
+    return null;
+  }
+
+  const priceText = compactWhitespace(tradeMatch[1]);
+  const price = parseLocaleNumber(priceText);
+
+  if (!Number.isFinite(price) || price <= 0) {
+    return null;
+  }
+
+  return {
+    price,
+    priceText,
+  };
+}
+
+function buildFetchedMonitorPayload(plan, sourceUrl, priceEntry) {
+  const ticker = normalizeMonitorTicker(plan?.instrument?.ticker);
+  if (!ticker || !priceEntry) {
+    return null;
+  }
+
+  return {
+    ticker,
+    name: compactWhitespace(plan?.instrument?.name) || ticker,
+    market: compactWhitespace(plan?.instrument?.market) || undefined,
+    currency: compactWhitespace(plan?.instrument?.currency).toUpperCase() || 'NOK',
+    currentPrice: priceEntry.price,
+    currentPriceText: priceEntry.priceText,
+    sourceUrl,
+  };
+}
+
+function buildSourceUrlCandidates(sourceUrl) {
+  const normalizedSourceUrl = compactWhitespace(sourceUrl);
+  if (!normalizedSourceUrl) {
+    return [];
+  }
+
+  const candidates = [normalizedSourceUrl];
+
+  try {
+    const parsed = new URL(normalizedSourceUrl);
+    if (parsed.searchParams.has('details')) {
+      parsed.searchParams.delete('details');
+      const withoutDetails = parsed.toString();
+      if (!candidates.includes(withoutDetails)) {
+        candidates.push(withoutDetails);
       }
+    }
+  } catch (_error) {
+    // Ignore malformed URLs here; validation happens earlier.
+  }
 
-      chrome.tabs.onUpdated.removeListener(handleUpdated);
-      chrome.tabs.onRemoved.removeListener(handleRemoved);
+  return candidates;
+}
+
+async function fetchPayloadFromSourceUrl(plan) {
+  const sourceUrl = typeof plan?.instrument?.sourceUrl === 'string' ? plan.instrument.sourceUrl.trim() : '';
+  const ticker = normalizeMonitorTicker(plan?.instrument?.ticker);
+
+  if (!ticker || !isSupportedNordnetUrl(sourceUrl)) {
+    return {
+      ok: false,
+      error: 'A supported Nordnet source URL is required.',
     };
+  }
 
-    const handleUpdated = (updatedTabId, changeInfo) => {
-      if (updatedTabId !== tabId || changeInfo.status !== 'complete') {
-        return;
+  const candidateUrls = buildSourceUrlCandidates(sourceUrl);
+  let lastError = 'Could not fetch the monitored Nordnet quote page.';
+
+  for (const candidateUrl of candidateUrls) {
+    try {
+      const response = await fetch(candidateUrl, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        redirect: 'follow',
+      });
+
+      if (!response.ok) {
+        lastError = `Nordnet quote request failed (${response.status}).`;
+        continue;
       }
 
-      cleanup();
-      resolve();
-    };
+      const html = await response.text();
+      const latestTrade = extractLatestTradePrice(stripHtmlToText(html));
 
-    const handleRemoved = (removedTabId) => {
-      if (removedTabId !== tabId) {
-        return;
+      if (!latestTrade) {
+        lastError = 'No latest trade price was found in the Nordnet quote response.';
+        continue;
       }
 
-      cleanup();
-      reject(new Error('Temporary Nordnet tab was closed before it finished loading.'));
-    };
-
-    timeoutId = setTimeout(() => {
-      cleanup();
-      reject(new Error(`Timed out waiting for Nordnet tab ${tabId} to finish loading.`));
-    }, timeoutMs);
-
-    chrome.tabs.onUpdated.addListener(handleUpdated);
-    chrome.tabs.onRemoved.addListener(handleRemoved);
-
-    chrome.tabs.get(tabId, (tab) => {
-      if (chrome.runtime.lastError) {
-        cleanup();
-        reject(new Error(chrome.runtime.lastError.message ?? 'Could not inspect temporary Nordnet tab.'));
-        return;
+      const payload = buildFetchedMonitorPayload(plan, candidateUrl, latestTrade);
+      if (!payload) {
+        lastError = 'Fetched Nordnet quote data could not be converted into a monitor payload.';
+        continue;
       }
 
-      if (tab?.status === 'complete') {
-        cleanup();
-        resolve();
-      }
-    });
-  });
+      return {
+        ok: true,
+        payload,
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : 'Could not fetch the monitored Nordnet quote page.';
+    }
+  }
+
+  return {
+    ok: false,
+    error: lastError,
+  };
 }
 
 async function syncMonitorTickersFromPlans(plans) {
@@ -1028,28 +1165,14 @@ async function refreshInstrumentFromSourceUrl(plan, refreshedTickers) {
     return false;
   }
 
-  let temporaryTabId = null;
-
   try {
-    const createdTab = await chrome.tabs.create({
-      url: sourceUrl,
-      active: false,
-    });
-
-    temporaryTabId = createdTab?.id ?? null;
-    if (!temporaryTabId) {
-      throw new Error('Temporary Nordnet tab could not be created.');
-    }
-
-    await waitForTabLoadComplete(temporaryTabId);
-
-    const payloadResponse = await loadTabStockPayload(temporaryTabId);
+    const payloadResponse = await fetchPayloadFromSourceUrl(plan);
     if (!payloadResponse?.ok || !payloadResponse?.payload) {
-      throw new Error(payloadResponse?.error ?? 'Could not read instrument data from the temporary Nordnet tab.');
+      throw new Error(payloadResponse?.error ?? 'Could not read instrument data from the Nordnet quote response.');
     }
 
     const payload = payloadResponse.payload;
-    await publishCurrentStockPriceUpdate(payload, 'nordnet-background-source-url');
+    await publishCurrentStockPriceUpdate(payload, 'nordnet-background-source-fetch');
 
     refreshedTickers.add(ticker);
     return true;
@@ -1060,14 +1183,6 @@ async function refreshInstrumentFromSourceUrl(plan, refreshedTickers) {
       error: error instanceof Error ? error.message : error,
     });
     return false;
-  } finally {
-    if (temporaryTabId) {
-      try {
-        await chrome.tabs.remove(temporaryTabId);
-      } catch (_error) {
-        // Ignore remove failures for already-closed temporary tabs.
-      }
-    }
   }
 }
 
