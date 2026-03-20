@@ -17,6 +17,50 @@ const NORDNET_TAB_PATTERNS = [
   'https://www.nordnet.no/etp/sertifikat/*/liste/*',
 ];
 
+// Exchange trading hours — keyed by MIC code and common display name aliases (lowercase)
+const EXCHANGE_TRADING_HOURS = {
+  XOSL: { timezone: 'Europe/Oslo',        open: '09:00', close: '16:25' },
+  XSTO: { timezone: 'Europe/Stockholm',   open: '09:00', close: '17:30' },
+  XCSE: { timezone: 'Europe/Copenhagen',  open: '09:00', close: '17:00' },
+  XHEL: { timezone: 'Europe/Helsinki',    open: '09:00', close: '18:30' },
+  XICE: { timezone: 'Atlantic/Reykjavik', open: '09:30', close: '15:30' },
+  XETR: { timezone: 'Europe/Berlin',      open: '09:00', close: '17:30' },
+  XETA: { timezone: 'Europe/Berlin',      open: '09:00', close: '17:30' },
+  XNYS: { timezone: 'America/New_York',   open: '09:30', close: '16:00' },
+  XNAS: { timezone: 'America/New_York',   open: '09:30', close: '16:00' },
+  XLON: { timezone: 'Europe/London',      open: '08:00', close: '16:30' },
+  XPAR: { timezone: 'Europe/Paris',       open: '09:00', close: '17:30' },
+  XAMS: { timezone: 'Europe/Amsterdam',   open: '09:00', close: '17:30' },
+  // Display name aliases
+  'xetra':               { timezone: 'Europe/Berlin',      open: '09:00', close: '17:30' },
+  'oslo børs':           { timezone: 'Europe/Oslo',        open: '09:00', close: '16:25' },
+  'oslo stock exchange': { timezone: 'Europe/Oslo',        open: '09:00', close: '16:25' },
+  'nasdaq':              { timezone: 'America/New_York',   open: '09:30', close: '16:00' },
+  'nyse':                { timezone: 'America/New_York',   open: '09:30', close: '16:00' },
+  'lse':                 { timezone: 'Europe/London',      open: '08:00', close: '16:30' },
+  'london stock exchange': { timezone: 'Europe/London',   open: '08:00', close: '16:30' },
+};
+
+function isInstrumentTradingNow(instrument) {
+  const hours =
+    EXCHANGE_TRADING_HOURS[instrument?.marketCode] ??
+    EXCHANGE_TRADING_HOURS[instrument?.exchangeName?.toLowerCase()] ??
+    EXCHANGE_TRADING_HOURS[instrument?.market?.toLowerCase()] ??
+    null;
+
+  if (!hours) return true; // Unknown exchange — always allow monitoring
+
+  const now = new Date();
+  const local = new Date(now.toLocaleString('en-US', { timeZone: hours.timezone }));
+  const day = local.getDay(); // 0 = Sun, 6 = Sat
+  if (day === 0 || day === 6) return false;
+
+  const currentMinutes = local.getHours() * 60 + local.getMinutes();
+  const [openH, openM] = hours.open.split(':').map(Number);
+  const [closeH, closeM] = hours.close.split(':').map(Number);
+  return currentMinutes >= openH * 60 + openM && currentMinutes <= closeH * 60 + closeM;
+}
+
 function debugLog(step, details) {
   console.info(`[StopLossExtension background] ${step}`, details);
 }
@@ -1788,6 +1832,10 @@ async function refreshMonitoredSourceUrls(plans, refreshedTickers) {
   }
 
   for (const plan of uniquePlansByTicker.values()) {
+    if (!isInstrumentTradingNow(plan?.instrument)) {
+      debugLog('Skipping refresh — market closed', { ticker: plan?.instrument?.ticker });
+      continue;
+    }
     await refreshInstrumentFromSourceUrl(plan, refreshedTickers);
   }
 }
