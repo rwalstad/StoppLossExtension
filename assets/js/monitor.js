@@ -214,8 +214,29 @@ function getSavedOrder(plan) {
   return savedOrder;
 }
 
+function getSavedOrderStatus(plan) {
+  const status = String(plan?.pendingOrder?.status ?? '').trim().toUpperCase();
+  return status || '';
+}
+
+function isPendingSavedOrder(plan) {
+  return getSavedOrderStatus(plan) === 'PENDING';
+}
+
+function isCancelledSavedOrder(plan) {
+  return getSavedOrderStatus(plan) === 'CANCELLED';
+}
+
 function hasPlaceableSavedOrder(plan) {
-  return Boolean(getSavedOrder(plan) && String(plan?.instrument?.sourceUrl ?? '').trim());
+  return Boolean(
+    getSavedOrder(plan) &&
+    String(plan?.instrument?.sourceUrl ?? '').trim() &&
+    (isPendingSavedOrder(plan) || isCancelledSavedOrder(plan))
+  );
+}
+
+function canMarkSavedOrderDone(plan) {
+  return Boolean(getSavedOrder(plan) && isPendingSavedOrder(plan));
 }
 
 function getSavedOrderSummary(plan) {
@@ -279,6 +300,109 @@ async function placeSavedOrder(plan, price) {
     window.alert(response?.message ?? 'Saved Nordnet order submitted.');
   } catch (error) {
     window.alert(error instanceof Error ? error.message : 'Failed to place the saved Nordnet order.');
+  } finally {
+    placingPlanKey = '';
+    renderPlans();
+    applyPrices(latestPriceMap);
+  }
+}
+
+function askForFilledOrderDetails(plan, price) {
+  const savedOrder = getSavedOrder(plan);
+  if (!savedOrder) {
+    return null;
+  }
+
+  const ticker = normalizeTicker(plan?.instrument?.ticker) || 'instrument';
+  const suggestedPrice = String(savedOrder.price ?? '').trim() || (typeof price === 'number' ? String(price) : '');
+  const suggestedQuantity = String(savedOrder.quantity ?? '').trim();
+
+  const executedPriceInput = window.prompt(`Executed price for ${ticker}:`, suggestedPrice);
+  if (executedPriceInput === null) {
+    return null;
+  }
+
+  const executedQuantityInput = window.prompt(`Executed quantity for ${ticker}:`, suggestedQuantity);
+  if (executedQuantityInput === null) {
+    return null;
+  }
+
+  const feeInput = window.prompt('Fee (optional):', '');
+  if (feeInput === null) {
+    return null;
+  }
+
+  const executedPrice = Number(executedPriceInput);
+  const executedQuantity = Number(executedQuantityInput);
+  const fee = feeInput.trim() === '' ? null : Number(feeInput);
+
+  if (!Number.isFinite(executedPrice) || executedPrice <= 0) {
+    window.alert('Executed price must be greater than zero.');
+    return null;
+  }
+
+  if (!Number.isFinite(executedQuantity) || executedQuantity <= 0) {
+    window.alert('Executed quantity must be greater than zero.');
+    return null;
+  }
+
+  if (fee !== null && (!Number.isFinite(fee) || fee < 0)) {
+    window.alert('Fee must be zero or greater.');
+    return null;
+  }
+
+  return {
+    executedPrice,
+    executedQuantity,
+    fee,
+    executedAt: new Date().toISOString(),
+  };
+}
+
+async function markSavedOrderDone(plan, price) {
+  if (!canMarkSavedOrderDone(plan)) {
+    window.alert('This monitor does not have a pending order that can be marked as done.');
+    return;
+  }
+
+  const savedOrder = getSavedOrder(plan);
+  const details = askForFilledOrderDetails(plan, price);
+  if (!details) {
+    return;
+  }
+
+  const ticker = normalizeTicker(plan?.instrument?.ticker) || 'instrument';
+  const confirmMessage = [
+    `Mark ${ticker} as trade done?`,
+    '',
+    `${savedOrder.side} ${formatPrice(details.executedPrice)} x ${formatPrice(details.executedQuantity)}`,
+    details.fee !== null ? `Fee ${formatPrice(details.fee)}` : 'No fee recorded',
+  ].join('\n');
+
+  if (!window.confirm(confirmMessage)) {
+    return;
+  }
+
+  const planKey = getPlanKey(plan);
+  placingPlanKey = planKey;
+  renderPlans();
+  applyPrices(latestPriceMap);
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: 'MARK_MONITORED_ORDER_FILLED',
+      orderId: savedOrder.id,
+      payload: details,
+    });
+
+    if (!response?.ok) {
+      throw new Error(response?.error ?? 'Failed to mark the saved order as filled.');
+    }
+
+    await syncMonitorPlansFromServer({ silent: true });
+    window.alert('Saved order marked as filled and the monitoring state was updated.');
+  } catch (error) {
+    window.alert(error instanceof Error ? error.message : 'Failed to mark the saved order as filled.');
   } finally {
     placingPlanKey = '';
     renderPlans();
@@ -487,9 +611,15 @@ function applyPrices(priceMap) {
 
     if (actionCell) {
       const canPlace = hit && hasPlaceableSavedOrder(plan);
+      const canMarkDone = hit && canMarkSavedOrderDone(plan);
       const isPlacing = placingPlanKey === getPlanKey(plan);
-      actionCell.innerHTML = canPlace
-        ? `<button type="button" class="table-action" data-action="place-saved-order" data-plan-index="${index}" ${isPlacing ? 'disabled' : ''}>${escapeHtml(isPlacing ? 'Placing...' : getPlanActionLabel(plan))}</button>`
+      actionCell.innerHTML = canPlace || canMarkDone
+        ? `
+          <div class="table-actions">
+            ${canPlace ? `<button type="button" class="table-action" data-action="place-saved-order" data-plan-index="${index}" ${isPlacing ? 'disabled' : ''}>${escapeHtml(isPlacing ? 'Working...' : getPlanActionLabel(plan))}</button>` : ''}
+            ${canMarkDone ? `<button type="button" class="table-action secondary" data-action="mark-saved-order-done" data-plan-index="${index}" ${isPlacing ? 'disabled' : ''}>${escapeHtml(isPlacing ? 'Working...' : 'Trade done')}</button>` : ''}
+          </div>
+        `
         : '<span class="muted">Waiting</span>';
     }
 
@@ -569,6 +699,40 @@ async function readStoredPrices() {
   return storage?.extensionPrices ?? {};
 }
 
+async function fetchServerPriceMap(options = {}) {
+  const tickers = [...new Set(
+    monitorPlans
+      .map((plan) => normalizeTicker(plan?.instrument?.ticker))
+      .filter(Boolean),
+  )];
+
+  if (tickers.length === 0) {
+    return {};
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: 'FETCH_LATEST_PRICE_SNAPSHOTS',
+      traderId: monitorTraderId || undefined,
+      tickers,
+    });
+
+    if (!response?.ok) {
+      if (!options?.silent) {
+        console.info('[StopLossExtension monitor] server price snapshot fetch failed', response?.error ?? 'Unknown error');
+      }
+      return {};
+    }
+
+    return toPriceMapFromServer(response);
+  } catch (error) {
+    if (!options?.silent) {
+      console.info('[StopLossExtension monitor] server price snapshot fetch exception', error);
+    }
+    return {};
+  }
+}
+
 async function loadMonitorState() {
   const storage = await chrome.storage.local.get([
     'floatingMonitorState',
@@ -587,15 +751,68 @@ async function loadMonitorState() {
     storage?.[SELECTED_TRADER_ID_STORAGE_KEY] ??
     '',
   ).trim();
-  monitorTraderName = String(
-    state?.currentTraderName ??
-    storage?.[SELECTED_TRADER_NAME_STORAGE_KEY] ??
-    '',
-  ).trim();
+  const stateTraderName = String(state?.currentTraderName ?? '').trim();
+  const storedTraderName = String(storage?.[SELECTED_TRADER_NAME_STORAGE_KEY] ?? '').trim();
+  monitorTraderName = stateTraderName || storedTraderName;
 
   syncSelectedTraderLabel();
   applyViewMode();
   renderPlans();
+  void hydrateTraderNameFromServer();
+}
+
+function getTraderDisplayName(trader) {
+  return String(trader?.name ?? trader?.email ?? trader?.externalUserId ?? '').trim();
+}
+
+function looksLikeFallbackTraderLabel(value) {
+  return /^\d+$/.test(String(value ?? '').trim());
+}
+
+async function hydrateTraderNameFromServer() {
+  if (!monitorTraderId) {
+    return false;
+  }
+
+  if (monitorTraderName && !looksLikeFallbackTraderLabel(monitorTraderName)) {
+    return true;
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'FETCH_TRADERS' });
+    if (!response?.ok) {
+      return false;
+    }
+
+    const traders = Array.isArray(response?.data) ? response.data : [];
+    const trader = traders.find((entry) => String(entry?.id ?? '').trim() === monitorTraderId);
+    const traderName = getTraderDisplayName(trader);
+
+    if (!traderName) {
+      return false;
+    }
+
+    monitorTraderName = traderName;
+    syncSelectedTraderLabel();
+    renderPlans();
+
+    const storage = await chrome.storage.local.get(['floatingMonitorState']);
+    const currentState = storage?.floatingMonitorState ?? {};
+
+    await chrome.storage.local.set({
+      [SELECTED_TRADER_NAME_STORAGE_KEY]: traderName,
+      floatingMonitorState: {
+        ...currentState,
+        currentTraderId: monitorTraderId,
+        currentTraderName: traderName,
+      },
+    });
+
+    return true;
+  } catch (error) {
+    console.info('[StopLossExtension monitor] hydrateTraderNameFromServer failed', error);
+    return false;
+  }
 }
 
 async function loadMonitorPlansFromStorage(options = {}) {
@@ -664,12 +881,17 @@ async function refreshPrices(options = {}) {
       applyPrices(backgroundPriceMap);
     }
 
+    const serverPriceMap = await fetchServerPriceMap({ silent: options?.silent });
     const storedPrices = await readStoredPrices();
-    const mergedPrices = mergePriceMaps(backgroundPriceMap, storedPrices);
+    const mergedPrices = mergePriceMaps(
+      backgroundPriceMap,
+      mergePriceMaps(serverPriceMap, storedPrices),
+    );
 
     console.info('[StopLossExtension monitor] refreshPrices apply', {
       appliedTickers: Object.keys(mergedPrices),
       refreshOk: Boolean(refreshResponse?.ok),
+      serverTickers: Object.keys(serverPriceMap),
     });
 
     applyPrices(mergedPrices);
@@ -725,17 +947,29 @@ monitorTableBody?.addEventListener('click', (event) => {
   }
 
   const button = target.closest('[data-action="place-saved-order"]');
-  if (!(button instanceof HTMLButtonElement)) {
+  const doneButton = target.closest('[data-action="mark-saved-order-done"]');
+  const actionButton =
+    button instanceof HTMLButtonElement
+      ? button
+      : doneButton instanceof HTMLButtonElement
+        ? doneButton
+        : null;
+  if (!actionButton) {
     return;
   }
 
-  const index = Number(button.dataset.planIndex);
+  const index = Number(actionButton.dataset.planIndex);
   const plan = monitorPlans[index];
   const ticker = normalizeTicker(plan?.instrument?.ticker);
   const entry = getStoredPriceEntryForTicker(ticker, latestPriceMap);
   const price = entry?.ok ? Number(entry.price) : null;
 
   if (!plan || typeof price !== 'number' || !Number.isFinite(price)) {
+    return;
+  }
+
+  if (actionButton.dataset.action === 'mark-saved-order-done') {
+    void markSavedOrderDone(plan, price);
     return;
   }
 
@@ -774,8 +1008,11 @@ window.addEventListener('beforeunload', () => {
 void loadMonitorState().then(async () => {
   applyPrices(await readStoredPrices());
   await loadMonitorPlansFromStorage({ silent: true });
+  applyPrices(await fetchServerPriceMap({ silent: true }));
   void refreshPrices({ silent: true });
   refreshIntervalId = window.setInterval(() => {
     void refreshPrices({ silent: true });
   }, 60000);
 });
+
+

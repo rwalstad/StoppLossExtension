@@ -274,6 +274,34 @@
         stroke-linejoin: round;
       }
 
+      .table-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .table-action {
+        border: 0;
+        border-radius: 999px;
+        background: #0f8b8d;
+        color: #fff;
+        padding: 6px 10px;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+
+      .table-action.secondary {
+        background: #d9e2ec;
+        color: #102a43;
+      }
+
+      .table-action:disabled {
+        opacity: 0.7;
+        cursor: default;
+      }
+
       .minimal-list {
         width: 100%;
         display: grid;

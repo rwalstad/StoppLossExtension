@@ -711,6 +711,14 @@
     }
   }
 
+  function readSelectedTraderName() {
+    try {
+      return window.localStorage.getItem(TRADER_NAME_STORAGE_KEY) ?? '';
+    } catch (_error) {
+      return '';
+    }
+  }
+
   function writeSelectedTraderId(traderId) {
     try {
       if (traderId) {
@@ -1765,6 +1773,7 @@
     const livePrice = document.createElement('span');
     livePrice.style.fontSize = '11px';
     livePrice.style.color = '#334e68';
+    const supportedInstrumentPage = isSupportedInstrumentPage();
 
     toggleRow.appendChild(openMonitorButton);
     toggleRow.appendChild(toggle);
@@ -1833,14 +1842,42 @@
     let selectedTraderId = '';
     let selectedTraderName = '';
 
-    traderSelect.addEventListener('change', () => {
+    function syncSelectedTraderFromUi() {
       const option = traderSelect.options[traderSelect.selectedIndex];
-      selectedTraderId = traderSelect.value;
-      selectedTraderName = option?.textContent ?? '';
-      writeSelectedTraderSelection(selectedTraderId, selectedTraderName);
+      const selectTraderId = traderSelect.value || '';
+      const selectTraderName = option?.textContent ?? '';
+      const storedTraderId = readSelectedTraderId();
+      const storedTraderName = readSelectedTraderName();
+
+      selectedTraderId = selectedTraderId || selectTraderId || storedTraderId || '';
+      selectedTraderName =
+        selectedTraderName || selectTraderName || storedTraderName || '';
+
+      if (selectedTraderId && selectedTraderId !== traderSelect.value) {
+        const matchingOption = [...traderSelect.options].find((entry) => entry.value === selectedTraderId);
+        if (matchingOption) {
+          traderSelect.value = matchingOption.value;
+        }
+      }
+
+      if (selectedTraderId) {
+        writeSelectedTraderSelection(selectedTraderId, selectedTraderName);
+      }
+
+      return {
+        id: selectedTraderId,
+        name: selectedTraderName,
+      };
+    }
+
+    traderSelect.addEventListener('change', () => {
+      const selection = syncSelectedTraderFromUi();
       traderLabel.textContent = selectedTraderName
         ? `Current trader: ${selectedTraderName}`
         : 'Trader: none selected';
+      if (!selectedTraderName && selection.name) {
+        traderLabel.textContent = `Current trader: ${selection.name}`;
+      }
     });
 
     document.addEventListener('input', (event) => {
@@ -1867,6 +1904,26 @@
         orderForm.side === 'SELL' ? 'warning' : 'info',
       );
     });
+
+    if (!supportedInstrumentPage) {
+      setBadgeState(toggle, 'Monitor Ready', '#486581');
+      toggle.textContent = 'Monitor Ready';
+      traderLabel.textContent = 'Monitor access from any Nordnet page';
+      button.dataset.actionMode = ACTION_MODE_IMPORT;
+      button.dataset.importIntent = 'import';
+      button.disabled = true;
+      button.style.cursor = 'default';
+      button.style.background = '#829ab1';
+      button.textContent = 'Open a stock page';
+      livePrice.textContent = 'Floating monitor can be opened here.';
+      setStatusMessage(
+        status,
+        'Open the floating monitor to see your active monitored stocks anywhere on Nordnet.',
+        'info',
+      );
+      setRetryButtonState({ visible: false, loading: false });
+      return;
+    }
 //TODO: if the stop loss action is triggered the internal message should get the current price and use that as the default value in the prompt, instead of leaving it blank.
     button.addEventListener('click', async () => {
       button.disabled = true;
@@ -1920,6 +1977,8 @@
       );
 
       try {
+        syncSelectedTraderFromUi();
+
         const payload = await collectStockPayload();
         if (!payload.ok) {
           shouldRefreshState = false;
@@ -2555,10 +2614,6 @@
 
     return false;
   });
-
-  if (!isSupportedInstrumentPage()) {
-    return;
-  }
 
   let lastPageKey = `${window.location.pathname}${window.location.search}`;
 

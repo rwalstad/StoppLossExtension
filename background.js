@@ -2,11 +2,14 @@ const APP_BASE_URL = 'https://trading.just4us.no';
 const DASHBOARD_URL = `${APP_BASE_URL}/dashboard`;
 const DASHBOARD_FALLBACK_URL = `${APP_BASE_URL}/`;
 const IMPORT_URL = `${APP_BASE_URL}/api/extension/instruments`;
-const TRADERS_URL = `${APP_BASE_URL}/api/traders`;
+const TRADERS_URL = `${APP_BASE_URL}/api/extension/traders`;
 const VIRTUAL_STOP_LOSS_URL = `${APP_BASE_URL}/api/extension/virtual-stop-loss`;
+const EXTENSION_STOP_LOSS_URL = `${APP_BASE_URL}/api/extension/positions`;
 const MONITORING_PLAN_URL = `${APP_BASE_URL}/api/extension/monitoring-plan`;
 const PRICE_SNAPSHOT_URL = `${APP_BASE_URL}/api/extension/price-snapshot`;
+const EXTENSION_SELL_ORDER_URL = `${APP_BASE_URL}/api/extension/positions`;
 const SELECTED_TRADER_STORAGE_KEY = 'stoploss-selected-trader-id';
+const SELECTED_TRADER_NAME_STORAGE_KEY = 'stoploss-selected-trader-name';
 const BACKGROUND_PRICE_REFRESH_ALARM = 'background-price-refresh';
 const BACKGROUND_PRICE_REFRESH_PERIOD_MINUTES = 1;
 const NORDNET_TAB_PATTERNS = [
@@ -24,6 +27,30 @@ async function getStoredSelectedTraderId() {
   });
   const traderId = String(storage?.[SELECTED_TRADER_STORAGE_KEY] ?? '').trim();
   return traderId || null;
+}
+
+async function syncSelectedTraderSelection(selection = {}) {
+  const storage = await new Promise((resolve) => {
+    chrome.storage.local.get([
+      SELECTED_TRADER_STORAGE_KEY,
+      SELECTED_TRADER_NAME_STORAGE_KEY,
+      'floatingMonitorState',
+    ], resolve);
+  });
+  const currentState = storage?.floatingMonitorState ?? {};
+  const nextTraderId = String(selection?.traderId ?? storage?.[SELECTED_TRADER_STORAGE_KEY] ?? '').trim();
+  const requestedTraderName = String(selection?.traderName ?? '').trim();
+  const nextTraderName = requestedTraderName || String(storage?.[SELECTED_TRADER_NAME_STORAGE_KEY] ?? currentState?.currentTraderName ?? '').trim();
+
+  await new Promise((resolve) => chrome.storage.local.set({
+    [SELECTED_TRADER_STORAGE_KEY]: nextTraderId,
+    [SELECTED_TRADER_NAME_STORAGE_KEY]: nextTraderName,
+    floatingMonitorState: {
+      ...currentState,
+      currentTraderId: nextTraderId,
+      currentTraderName: nextTraderName,
+    },
+  }, resolve));
 }
 
 async function checkDashboard() {
@@ -197,7 +224,7 @@ async function fetchTraders() {
 }
 
 async function saveStopLossRule(positionId, stopLossRule) {
-  const response = await fetch(`${APP_BASE_URL}/api/positions/${encodeURIComponent(String(positionId))}/stop-loss`, {
+  const response = await fetch(`${EXTENSION_STOP_LOSS_URL}/${encodeURIComponent(String(positionId))}/stop-loss`, {
     method: 'POST',
     credentials: 'include',
     headers: {
@@ -255,7 +282,7 @@ async function savePendingSellOrder(positionId, payload) {
     positionId,
     payload,
   });
-  const response = await fetch(`${APP_BASE_URL}/api/positions/${encodeURIComponent(String(positionId))}/sell-order`, {
+  const response = await fetch(`${EXTENSION_SELL_ORDER_URL}/${encodeURIComponent(String(positionId))}/sell-order`, {
     method: 'POST',
     credentials: 'include',
     headers: {
@@ -417,6 +444,45 @@ async function rearmSavedOrder(orderId) {
   };
 }
 
+async function markSavedOrderFilled(orderId, payload = {}) {
+  const traderId = await getStoredSelectedTraderId();
+  if (!orderId || !traderId) {
+    return {
+      ok: false,
+      error: 'Trader selection is required to mark the saved order as filled.',
+    };
+  }
+
+  const response = await fetch(`${APP_BASE_URL}/api/orders/${encodeURIComponent(String(orderId))}`, {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      traderId,
+      status: 'FILLED',
+      executedPrice: payload.executedPrice,
+      executedQuantity: payload.executedQuantity,
+      executedAt: payload.executedAt,
+      fee: payload.fee,
+    }),
+  });
+
+  const responsePayload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    return {
+      ok: false,
+      error: responsePayload?.error ?? 'Failed to mark the saved order as filled.',
+    };
+  }
+
+  return {
+    ok: true,
+    data: responsePayload,
+  };
+}
+
 async function saveInstrumentPriceSnapshot(payload) {
   const traderId = payload?.traderId ?? await getStoredSelectedTraderId();
   const requestPayload = traderId
@@ -519,41 +585,88 @@ async function fetchLatestInstrumentPriceSnapshots({ traderId, tickers } = {}) {
 
 async function fetchMonitoringPlans(traderId) {
   try {
-    const url = new URL(MONITORING_PLAN_URL);
-    const effectiveTraderId = traderId ?? await getStoredSelectedTraderId();
+    const requestedTraderId = traderId ?? await getStoredSelectedTraderId();
 
-    if (effectiveTraderId !== undefined && effectiveTraderId !== null && effectiveTraderId !== '') {
-      url.searchParams.set('traderId', String(effectiveTraderId));
-    }
+    async function requestPlans(candidateTraderId) {
+      const url = new URL(MONITORING_PLAN_URL);
 
-    const response = await fetch(url.toString(), {
-      method: 'GET',
-      credentials: 'include',
-      cache: 'no-store',
-    });
+      if (candidateTraderId !== undefined && candidateTraderId !== null && candidateTraderId !== '') {
+        url.searchParams.set('traderId', String(candidateTraderId));
+      }
 
-    const responsePayload = await response.json().catch(() => ({}));
-    debugLog('Fetch monitoring plans response', {
-      url: url.toString(),
-      status: response.status,
-      payload: responsePayload,
-    });
+      const response = await fetch(url.toString(), {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+      });
 
-    if (!response.ok) {
-      return {
-        ok: false,
+      const responsePayload = await response.json().catch(() => ({}));
+      debugLog('Fetch monitoring plans response', {
+        url: url.toString(),
         status: response.status,
-        error: responsePayload?.error ?? responsePayload?.message ?? 'Failed to load monitoring plans.',
+        payload: responsePayload,
+      });
+
+      return {
+        response,
+        payload: responsePayload,
+        requestedTraderId: candidateTraderId ?? null,
       };
     }
 
-    await syncMonitorTickersFromPlans(responsePayload?.plans);
-    await syncFloatingMonitorStateFromPlans(responsePayload?.plans);
+    let result = await requestPlans(requestedTraderId);
+    const requestedPlans = Array.isArray(result?.payload?.plans) ? result.payload.plans : [];
+    const shouldRetryWithoutTrader =
+      result.response.ok &&
+      requestedPlans.length === 0 &&
+      requestedTraderId !== undefined &&
+      requestedTraderId !== null &&
+      requestedTraderId !== '';
+
+    if (shouldRetryWithoutTrader) {
+      const fallbackResult = await requestPlans(null);
+      const fallbackPlans = Array.isArray(fallbackResult?.payload?.plans) ? fallbackResult.payload.plans : [];
+
+      if (fallbackResult.response.ok && fallbackPlans.length > 0) {
+        debugLog('Fetch monitoring plans fallback used', {
+          staleTraderId: requestedTraderId,
+          recoveredPlanCount: fallbackPlans.length,
+          trader: fallbackResult.payload?.trader ?? null,
+        });
+        result = fallbackResult;
+      }
+    }
+
+    if (!result.response.ok) {
+      return {
+        ok: false,
+        status: result.response.status,
+        error: result.payload?.error ?? result.payload?.message ?? 'Failed to load monitoring plans.',
+      };
+    }
+
+    const resolvedTraderId = String(
+      result.payload?.trader?.id ??
+      result.requestedTraderId ??
+      requestedTraderId ??
+      '',
+    ).trim();
+    const resolvedTraderName = String(result.payload?.trader?.name ?? '').trim();
+
+    await syncSelectedTraderSelection({
+      traderId: resolvedTraderId,
+      traderName: resolvedTraderName,
+    });
+    await syncMonitorTickersFromPlans(result.payload?.plans);
+    await syncFloatingMonitorStateFromPlans(result.payload?.plans, {
+      traderId: resolvedTraderId,
+      traderName: resolvedTraderName,
+    });
 
     return {
       ok: true,
-      status: response.status,
-      data: responsePayload,
+      status: result.response.status,
+      data: result.payload,
     };
   } catch (error) {
     return {
@@ -944,6 +1057,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === 'MARK_MONITORED_ORDER_FILLED') {
+    markSavedOrderFilled(message.orderId, message.payload).then(sendResponse);
+    return true;
+  }
+
   return false;
   
 });
@@ -951,6 +1069,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 /* --- Price monitor state used by the floating monitor UI --- */
 
 const DEFAULT_MONITOR_TICKERS = [];
+const BACKGROUND_TAB_PAYLOAD_RETRY_COUNT = 10;
+const BACKGROUND_TAB_PAYLOAD_RETRY_DELAY_MS = 750;
+const lastReportedBackgroundSnapshotByTicker = new Map();
 
 function normalizeMonitorTicker(value) {
   return String(value ?? '').trim().toUpperCase();
@@ -958,6 +1079,10 @@ function normalizeMonitorTicker(value) {
 
 function compactWhitespace(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function parseLocaleNumber(value) {
@@ -1072,22 +1197,95 @@ function buildSourceUrlCandidates(sourceUrl) {
     return [];
   }
 
-  const candidates = [normalizedSourceUrl];
+  const candidates = [];
 
   try {
     const parsed = new URL(normalizedSourceUrl);
-    if (parsed.searchParams.has('details')) {
-      parsed.searchParams.delete('details');
-      const withoutDetails = parsed.toString();
-      if (!candidates.includes(withoutDetails)) {
-        candidates.push(withoutDetails);
-      }
+
+    const withDetails = new URL(parsed.toString());
+    withDetails.search = '?details';
+    const withDetailsUrl = withDetails.toString();
+    if (!candidates.includes(withDetailsUrl)) {
+      candidates.push(withDetailsUrl);
+    }
+
+    parsed.search = '';
+    parsed.hash = '';
+    const withoutDetails = parsed.toString();
+    if (!candidates.includes(withoutDetails)) {
+      candidates.push(withoutDetails);
+    }
+
+    if (!candidates.includes(normalizedSourceUrl)) {
+      candidates.push(normalizedSourceUrl);
     }
   } catch (_error) {
-    // Ignore malformed URLs here; validation happens earlier.
+    candidates.push(normalizedSourceUrl);
   }
 
   return candidates;
+}
+
+async function openBackgroundQuoteTab(sourceUrl) {
+  const openedTab = await new Promise((resolve) => {
+    chrome.tabs.create(
+      {
+        url: sourceUrl,
+        active: false,
+      },
+      resolve,
+    );
+  });
+
+  if (!openedTab?.id) {
+    throw new Error('Could not open the Nordnet quote page in a background tab.');
+  }
+
+  await waitForTabComplete(openedTab.id);
+  return openedTab.id;
+}
+
+async function removeTabQuietly(tabId) {
+  if (!tabId) {
+    return;
+  }
+
+  try {
+    await chrome.tabs.remove(tabId);
+  } catch (_error) {
+    // Ignore cleanup errors if the temporary tab was already closed.
+  }
+}
+
+async function fetchPayloadFromBackgroundTab(plan, candidateUrl) {
+  let tabId = null;
+
+  try {
+    tabId = await openBackgroundQuoteTab(candidateUrl);
+    const payloadResponse = await loadTabStockPayload(tabId, {
+      retryCount: BACKGROUND_TAB_PAYLOAD_RETRY_COUNT,
+      retryDelayMs: BACKGROUND_TAB_PAYLOAD_RETRY_DELAY_MS,
+    });
+
+    if (!payloadResponse?.ok || !payloadResponse?.payload) {
+      throw new Error(payloadResponse?.error ?? 'Could not read instrument data from the Nordnet quote tab.');
+    }
+
+    return {
+      ok: true,
+      payload: {
+        ...payloadResponse.payload,
+        sourceUrl: candidateUrl,
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : 'Could not read instrument data from the Nordnet quote tab.',
+    };
+  } finally {
+    await removeTabQuietly(tabId);
+  }
 }
 
 async function fetchPayloadFromSourceUrl(plan) {
@@ -1122,7 +1320,18 @@ async function fetchPayloadFromSourceUrl(plan) {
       const latestTrade = extractLatestTradePrice(stripHtmlToText(html));
 
       if (!latestTrade) {
-        lastError = 'No latest trade price was found in the Nordnet quote response.';
+        const tabPayloadResponse = await fetchPayloadFromBackgroundTab(plan, candidateUrl);
+        if (tabPayloadResponse?.ok && tabPayloadResponse?.payload) {
+          debugLog('Background quote tab fallback succeeded', {
+            ticker,
+            sourceUrl: candidateUrl,
+          });
+          return tabPayloadResponse;
+        }
+
+        lastError =
+          tabPayloadResponse?.error ??
+          'No latest trade price was found in the Nordnet quote response.';
         continue;
       }
 
@@ -1159,7 +1368,7 @@ async function syncMonitorTickersFromPlans(plans) {
   }, resolve));
 }
 
-async function syncFloatingMonitorStateFromPlans(plans) {
+async function syncFloatingMonitorStateFromPlans(plans, options = {}) {
   const storage = await new Promise((resolve) => chrome.storage.local.get(['floatingMonitorState'], resolve));
   const currentState = storage?.floatingMonitorState ?? {};
 
@@ -1167,6 +1376,8 @@ async function syncFloatingMonitorStateFromPlans(plans) {
     floatingMonitorState: {
       ...currentState,
       plans: Array.isArray(plans) ? plans : [],
+      currentTraderId: String(options?.traderId ?? currentState?.currentTraderId ?? '').trim(),
+      currentTraderName: String(options?.traderName ?? '').trim() || String(currentState?.currentTraderName ?? '').trim(),
       updatedAt: new Date().toISOString(),
     },
   }, resolve));
@@ -1273,7 +1484,12 @@ async function requestTabStockPayload(tabId) {
   });
 }
 
-async function loadTabStockPayload(tabId) {
+function hasUsableStockPayload(payloadResponse) {
+  const price = Number(payloadResponse?.payload?.currentPrice);
+  return Boolean(payloadResponse?.ok && payloadResponse?.payload && Number.isFinite(price) && price > 0);
+}
+
+async function loadTabStockPayload(tabId, options = {}) {
   let payloadResponse = await requestTabStockPayload(tabId);
 
   if (!payloadResponse?.ok && payloadResponse?.needsInjection) {
@@ -1281,7 +1497,72 @@ async function loadTabStockPayload(tabId) {
     payloadResponse = await requestTabStockPayload(tabId);
   }
 
+  const retryCount = Number.isInteger(options?.retryCount) ? options.retryCount : BACKGROUND_TAB_PAYLOAD_RETRY_COUNT;
+  const retryDelayMs =
+    Number.isInteger(options?.retryDelayMs) && Number(options.retryDelayMs) >= 0
+      ? Number(options.retryDelayMs)
+      : BACKGROUND_TAB_PAYLOAD_RETRY_DELAY_MS;
+
+  for (let attempt = 0; attempt < retryCount; attempt += 1) {
+    if (hasUsableStockPayload(payloadResponse)) {
+      return payloadResponse;
+    }
+
+    await delay(retryDelayMs);
+    payloadResponse = await requestTabStockPayload(tabId);
+
+    if (!payloadResponse?.ok && payloadResponse?.needsInjection) {
+      await ensureContentScriptForTab(tabId);
+      payloadResponse = await requestTabStockPayload(tabId);
+    }
+  }
+
   return payloadResponse;
+}
+
+function buildBackgroundPriceSnapshotKey(payload) {
+  const ticker = normalizeMonitorTicker(payload?.ticker);
+  const isin = compactWhitespace(payload?.isin).toUpperCase();
+  const market = compactWhitespace(payload?.marketCode ?? payload?.market).toUpperCase();
+  const currentPrice = Number(payload?.currentPrice);
+  const currentPriceText = compactWhitespace(payload?.currentPriceText);
+
+  if (!ticker || !Number.isFinite(currentPrice) || currentPrice <= 0) {
+    return '';
+  }
+
+  return [ticker, isin, market, currentPrice.toFixed(4), currentPriceText].join('|');
+}
+
+async function persistBackgroundPriceSnapshot(stockPayload, source) {
+  const ticker = normalizeMonitorTicker(stockPayload?.ticker);
+  const snapshotKey = buildBackgroundPriceSnapshotKey(stockPayload);
+
+  if (!ticker || !snapshotKey || lastReportedBackgroundSnapshotByTicker.get(ticker) === snapshotKey) {
+    return false;
+  }
+
+  const response = await saveInstrumentPriceSnapshot({
+    ...stockPayload,
+    source,
+  });
+
+  if (!response?.ok || !response?.data?.saved) {
+    debugLog('Background price snapshot not saved', {
+      ticker,
+      snapshotKey,
+      response,
+    });
+    return false;
+  }
+
+  lastReportedBackgroundSnapshotByTicker.set(ticker, snapshotKey);
+  debugLog('Background price snapshot saved', {
+    ticker,
+    snapshotKey,
+    savedAt: response.data?.snapshot?.capturedAt ?? null,
+  });
+  return true;
 }
 
 async function publishCurrentStockPriceUpdate(stockPayload, source = 'nordnet-background') {
@@ -1314,6 +1595,16 @@ async function publishCurrentStockPriceUpdate(stockPayload, source = 'nordnet-ba
   }, resolve));
 
   try {
+    await persistBackgroundPriceSnapshot(stockPayload, source);
+  } catch (error) {
+    debugLog('Background price snapshot persist failed', {
+      ticker,
+      source,
+      error: error instanceof Error ? error.message : error,
+    });
+  }
+
+  try {
     chrome.runtime.sendMessage({
       type: 'PRICE_UPDATE',
       payload: updatePayload,
@@ -1323,6 +1614,83 @@ async function publishCurrentStockPriceUpdate(stockPayload, source = 'nordnet-ba
   }
 
   return true;
+}
+
+function toMonitorTimestamp(value) {
+  const timestamp = value ? new Date(value).getTime() : Number.NaN;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+async function syncStoredPricesFromServerSnapshots(plans) {
+  const tickers = [...new Set(
+    (Array.isArray(plans) ? plans : [])
+      .map((plan) => normalizeMonitorTicker(plan?.instrument?.ticker))
+      .filter(Boolean),
+  )];
+
+  if (tickers.length === 0) {
+    return {
+      ok: true,
+      tickers: [],
+      updatedAt: null,
+    };
+  }
+
+  const response = await fetchLatestInstrumentPriceSnapshots({ tickers });
+  if (!response?.ok) {
+    debugLog('Background server snapshot sync skipped', response?.error ?? 'Unknown error');
+    return {
+      ok: false,
+      tickers: [],
+      updatedAt: null,
+      error: response?.error ?? null,
+    };
+  }
+
+  const storage = await new Promise((resolve) => chrome.storage.local.get(['extensionPrices', 'extensionPricesUpdatedAt'], resolve));
+  const currentPrices = storage?.extensionPrices ?? {};
+  const nextPrices = { ...currentPrices };
+  let newestFetchedAt = storage?.extensionPricesUpdatedAt ?? null;
+  const syncedTickers = [];
+
+  for (const entry of Array.isArray(response?.data?.prices) ? response.data.prices : []) {
+    const ticker = normalizeMonitorTicker(entry?.ticker);
+    const marketPrice = Number(entry?.snapshot?.marketPrice);
+    const fetchedAt = entry?.snapshot?.capturedAt ?? null;
+
+    if (!ticker || !Number.isFinite(marketPrice)) {
+      continue;
+    }
+
+    const currentEntry = nextPrices[ticker];
+    if (toMonitorTimestamp(fetchedAt) < toMonitorTimestamp(currentEntry?.fetchedAt)) {
+      continue;
+    }
+
+    nextPrices[ticker] = {
+      ok: true,
+      price: marketPrice,
+      error: null,
+      fetchedAt,
+      source: 'stocktrade-server',
+    };
+    syncedTickers.push(ticker);
+
+    if (toMonitorTimestamp(fetchedAt) > toMonitorTimestamp(newestFetchedAt)) {
+      newestFetchedAt = fetchedAt;
+    }
+  }
+
+  await new Promise((resolve) => chrome.storage.local.set({
+    extensionPrices: nextPrices,
+    extensionPricesUpdatedAt: newestFetchedAt,
+  }, resolve));
+
+  return {
+    ok: true,
+    tickers: syncedTickers,
+    updatedAt: newestFetchedAt,
+  };
 }
 
 async function refreshOpenNordnetTabs() {
@@ -1416,6 +1784,7 @@ async function runBackgroundPriceRefresh() {
     const plans = await readStoredMonitorPlans();
     const refreshedTickers = await refreshOpenNordnetTabs();
     await refreshMonitoredSourceUrls(plans, refreshedTickers);
+    await syncStoredPricesFromServerSnapshots(plans);
     await fetchPricesAndPublish();
   } catch (error) {
     debugLog('Background price refresh failed', {
@@ -1495,3 +1864,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 });
+
+
+
+
