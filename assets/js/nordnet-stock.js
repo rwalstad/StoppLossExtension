@@ -58,6 +58,16 @@
     XICE: 'ISK',
     XETA: 'EUR',
   };
+  const UI_LABEL_MATCHERS = {
+    alarmContext: [/kursalarm/i],
+    alarmPrice: [/^varslingskurs$/i, /^kurs under$/i],
+    instrument: [/^instrument$/i],
+    alarmCondition: [/^vilk\u00E5r$/i, /^vilkar$/i, /^kurs under$/i],
+    orderActionBySide: {
+      BUY: [/^kj\u00F8p$/i, /^kjop$/i],
+      SELL: [/^selg$/i],
+    },
+  };
 
   function isSupportedInstrumentPage() {
     return STOCK_PATH_PATTERN.test(window.location.pathname) || CERTIFICATE_PATH_PATTERN.test(window.location.pathname);
@@ -489,12 +499,17 @@
       .filter(Boolean);
   }
 
-  function findAlarmValue(labelPattern) {
+  function matchesUiLabel(value, patterns) {
+    return patterns.some((pattern) => pattern.test(value));
+  }
+
+  function findAlarmValue(labelKey) {
+    const labelPatterns = UI_LABEL_MATCHERS[labelKey] ?? [];
     const texts = collectAlarmFactsFromText(document);
 
     for (let index = 0; index < texts.length; index += 1) {
       const value = texts[index];
-      if (!labelPattern.test(value)) {
+      if (!matchesUiLabel(value, labelPatterns)) {
         continue;
       }
 
@@ -509,18 +524,14 @@
 
   function extractAlarmPayload() {
     const statusTexts = collectAlarmFactsFromText(document);
-    const hasAlarmContext = statusTexts.some((text) => /kursalarm/i.test(text));
+    const hasAlarmContext = statusTexts.some((text) => matchesUiLabel(text, UI_LABEL_MATCHERS.alarmContext));
     if (!hasAlarmContext) {
       return null;
     }
 
-    const stopLossValue =
-      findAlarmValue(/^varslingskurs$/i) ||
-      findAlarmValue(/^kurs under$/i);
-    const instrumentName =
-      findAlarmValue(/^instrument$/i) ||
-      findText(['[role="dialog"] h1', '[role="dialog"] h2']);
-    const conditionText = findAlarmValue(/^vilkår$/i) || findAlarmValue(/^kurs under$/i);
+    const stopLossValue = findAlarmValue('alarmPrice');
+    const instrumentName = findAlarmValue('instrument') || findText(['[role="dialog"] h1', '[role="dialog"] h2']);
+    const conditionText = findAlarmValue('alarmCondition');
     const price = parseLocaleNumber(stopLossValue);
 
     if (price === null) {
@@ -1734,7 +1745,7 @@
 
     const retryButton = document.createElement('button');
     retryButton.type = 'button';
-    retryButton.textContent = '↻';
+    retryButton.textContent = '\u21BB';
     retryButton.title = 'Retry StockTrade dashboard check';
     retryButton.setAttribute('aria-label', 'Retry StockTrade dashboard check');
     retryButton.style.display = 'none';
@@ -2421,31 +2432,31 @@
     return true;
   }
 
-  function matchesButtonText(button, labels) {
+  function matchesButtonText(button, labelPatterns) {
     if (!(button instanceof HTMLButtonElement) || button.disabled) {
       return false;
     }
 
     const text = compactText(button.textContent ?? '').toLowerCase();
     const ariaLabel = compactText(button.getAttribute('aria-label') ?? '').toLowerCase();
-    return labels.some((label) => text === label || ariaLabel === label || text.includes(label) || ariaLabel.includes(label));
+    return labelPatterns.some((pattern) => pattern.test(text) || pattern.test(ariaLabel));
   }
 
-  function findActionButton(labels, options = {}) {
+  function findActionButton(labelPatterns, options = {}) {
     const scope = options.dialogOnly
       ? [...document.querySelectorAll('[role="dialog"] button, dialog button')]
       : [...document.querySelectorAll('button')].filter((button) => !button.closest('[role="dialog"], dialog'));
 
-    const matches = scope.filter((button) => matchesButtonText(button, labels));
+    const matches = scope.filter((button) => matchesButtonText(button, labelPatterns));
     return matches.at(-1) ?? null;
   }
 
-  async function waitForActionButton(labels, options = {}) {
+  async function waitForActionButton(labelPatterns, options = {}) {
     const timeoutMs = options.timeoutMs ?? 6000;
     const start = Date.now();
 
     while (Date.now() - start < timeoutMs) {
-      const button = findActionButton(labels, options);
+      const button = findActionButton(labelPatterns, options);
       if (button) {
         return button;
       }
@@ -2492,8 +2503,8 @@
 
     await new Promise((resolve) => window.setTimeout(resolve, 200));
 
-    const sideLabels = expectedSide === 'BUY' ? ['kj�p', 'kjop'] : ['selg'];
-    const primaryButton = findActionButton(sideLabels, { dialogOnly: false });
+    const actionButtonPatterns = UI_LABEL_MATCHERS.orderActionBySide[expectedSide] ?? [];
+    const primaryButton = findActionButton(actionButtonPatterns, { dialogOnly: false });
     if (!primaryButton) {
       return {
         ok: false,
@@ -2503,7 +2514,7 @@
 
     primaryButton.click();
 
-    const confirmButton = await waitForActionButton(sideLabels, { dialogOnly: true, timeoutMs: 8000 });
+    const confirmButton = await waitForActionButton(actionButtonPatterns, { dialogOnly: true, timeoutMs: 8000 });
     if (confirmButton) {
       confirmButton.click();
       return {
