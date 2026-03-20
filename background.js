@@ -306,6 +306,19 @@ async function savePendingSellOrder(positionId, payload) {
     };
   }
 
+  if (responsePayload?.monitoringPlan && responsePayload?.instrument) {
+    await upsertStoredMonitoringPlan(
+      buildStoredMonitoringPlanEntry({
+        instrument: responsePayload.instrument,
+        monitoringPlan: responsePayload.monitoringPlan,
+        pendingOrder: responsePayload.order,
+      }),
+      {
+        currentTicker: responsePayload.instrument?.ticker ?? '',
+      },
+    );
+  }
+
   return {
     ok: true,
     status: response.status,

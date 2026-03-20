@@ -63,6 +63,7 @@
     alarmPrice: [/^varslingskurs$/i, /^kurs under$/i],
     instrument: [/^instrument$/i],
     alarmCondition: [/^vilk\u00E5r$/i, /^vilkar$/i, /^kurs under$/i],
+    orderTriggerPrice: [/^triggerpris$/i, /^trigger price$/i, /^utl\u00F8serkurs$/i, /^utloserkurs$/i],
     orderActionBySide: {
       BUY: [/^kj\u00F8p$/i, /^kjop$/i],
       SELL: [/^selg$/i],
@@ -611,6 +612,115 @@
       quantity: quantityField.value,
       price: priceField.value,
     };
+  }
+
+  function findFactValueByPatterns(facts, patterns) {
+    for (const fact of facts) {
+      if (patterns.some((pattern) => pattern.test(fact.label))) {
+        return fact.value;
+      }
+    }
+
+    return '';
+  }
+
+  function readNumericFieldByPatterns(patterns) {
+    const inputs = [...document.querySelectorAll('input')];
+
+    for (const input of inputs) {
+      if (!(input instanceof HTMLInputElement)) {
+        continue;
+      }
+
+      const descriptors = compactText(
+        [
+          input.id,
+          input.name,
+          input.getAttribute('aria-label') ?? '',
+          input.getAttribute('placeholder') ?? '',
+        ].join(' '),
+      );
+      if (!patterns.some((pattern) => pattern.test(descriptors))) {
+        continue;
+      }
+
+      const wrapper = input.closest('div');
+      const hiddenInput = wrapper?.querySelector('input[type="hidden"]');
+      const text = compactText(input.value ?? '');
+      const numericText =
+        hiddenInput instanceof HTMLInputElement ? compactText(hiddenInput.value ?? '') : text;
+      const value = parseLocaleNumber(numericText || text);
+      if (value === null || value <= 0) {
+        continue;
+      }
+
+      return {
+        text: text || numericText,
+        value,
+      };
+    }
+
+    return null;
+  }
+
+  function parseTriggerCondition(triggerText, fallbackValue) {
+    const normalizedText = compactText(triggerText ?? '');
+
+    if (/[\u2265>]/.test(normalizedText) || /\b(over|above|minimum|minst)\b/i.test(normalizedText)) {
+      return 'AT_OR_ABOVE';
+    }
+
+    if (/[\u2264<]/.test(normalizedText) || /\b(under|below|maks|maximum)\b/i.test(normalizedText)) {
+      return 'AT_OR_BELOW';
+    }
+
+    return fallbackValue;
+  }
+
+  function extractSellStopLossTrigger(orderForm) {
+    if (!isSellOrderPage()) {
+      return null;
+    }
+
+    const defaultCondition = 'AT_OR_BELOW';
+    const facts = extractFactsFromDocument(document);
+    const triggerText = findFactValueByPatterns(facts, UI_LABEL_MATCHERS.orderTriggerPrice);
+    const triggerValue = parseLocaleNumber(triggerText);
+    if (triggerValue !== null && triggerValue > 0) {
+      return {
+        text: triggerText,
+        value: triggerValue,
+        triggerCondition: parseTriggerCondition(triggerText, defaultCondition),
+      };
+    }
+
+    const inputMatch = readNumericFieldByPatterns([/trigger/i, /stop/i]);
+    if (inputMatch) {
+      return {
+        text: inputMatch.text,
+        value: inputMatch.value,
+        triggerCondition: defaultCondition,
+      };
+    }
+
+    const orderTypeLabel = compactText(orderForm?.orderTypeLabel ?? '');
+    if (/stop\s*loss/i.test(orderTypeLabel)) {
+      const pageText = compactText(document.body?.textContent ?? '');
+      const triggerMatch = pageText.match(/triggerpris\s*([<>\u2264\u2265]=?|[<>\u2264\u2265])?\s*([\d.,\s]+(?:NOK|SEK|DKK|EUR|USD)?)/i);
+      if (triggerMatch) {
+        const matchedText = compactText(triggerMatch[0]);
+        const matchedValue = parseLocaleNumber(triggerMatch[2] ?? '');
+        if (matchedValue !== null && matchedValue > 0) {
+          return {
+            text: matchedText,
+            value: matchedValue,
+            triggerCondition: parseTriggerCondition(matchedText, defaultCondition),
+          };
+        }
+      }
+    }
+
+    return null;
   }
 
   async function collectStockPayload() {
@@ -2152,6 +2262,18 @@
             return;
           }
 
+          const currentPrice = refreshLivePrice();
+          const sellStopLossTrigger = extractSellStopLossTrigger(sellOrderForm);
+          if (/stop\s*loss/i.test(sellOrderForm.orderTypeLabel || '') && !sellStopLossTrigger?.value) {
+            shouldRefreshState = false;
+            setStatusMessage(
+              status,
+              'Could not read the stop-loss trigger price from the Nordnet ticket. Make sure the trigger price is visible, then try again.',
+              'warning',
+            );
+            return;
+          }
+
           const target = await resolveStopLossTarget(selectedTraderId, payload.payload);
           if (!target.ok) {
             shouldRefreshState = false;
@@ -2162,9 +2284,14 @@
           const response = await savePendingSellOrder(target.holding.id, {
             saleQuantity: sellOrderForm.quantity,
             price: sellOrderForm.price,
+            stopLossPrice: sellStopLossTrigger?.value ?? undefined,
+            triggerCondition: sellStopLossTrigger?.triggerCondition,
+            currentPrice: currentPrice.value ?? undefined,
+            currentPriceText: currentPrice.text || undefined,
           });
           debugLog('Pending sell order save response', {
             ticker: target.holding?.instrument?.ticker ?? payload.payload.ticker,
+            trigger: sellStopLossTrigger,
             response,
           });
 
@@ -2178,7 +2305,9 @@
             button.style.cursor = 'default';
             setStatusMessage(
               status,
-              `Saved pending sell order for ${ticker} at ${sellOrderForm.priceText} x ${sellOrderForm.quantityText}.`,
+              sellStopLossTrigger?.value
+                ? `Saved pending sell order for ${ticker} at ${sellOrderForm.priceText} x ${sellOrderForm.quantityText} and attached monitoring at ${sellStopLossTrigger.text || sellStopLossTrigger.value}.`
+                : `Saved pending sell order for ${ticker} at ${sellOrderForm.priceText} x ${sellOrderForm.quantityText}.`,
               'success',
             );
           } else {
@@ -2636,3 +2765,4 @@
     subtree: true,
   });
 })();
+
