@@ -10,8 +10,6 @@ const PRICE_SNAPSHOT_URL = `${APP_BASE_URL}/api/extension/price-snapshot`;
 const EXTENSION_SELL_ORDER_URL = `${APP_BASE_URL}/api/extension/positions`;
 const SELECTED_TRADER_STORAGE_KEY = 'stoploss-selected-trader-id';
 const SELECTED_TRADER_NAME_STORAGE_KEY = 'stoploss-selected-trader-name';
-const BACKGROUND_PRICE_REFRESH_ALARM = 'background-price-refresh';
-const BACKGROUND_PRICE_REFRESH_PERIOD_MINUTES = 1;
 const NORDNET_TAB_PATTERNS = [
   'https://www.nordnet.no/aksjer/kurser/*',
   'https://www.nordnet.no/etp/sertifikat/*/liste/*',
@@ -1098,277 +1096,6 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function parseLocaleNumber(value) {
-  const text = compactWhitespace(value);
-  if (!text) {
-    return null;
-  }
-
-  const cleaned = text.replace(/[^\d,.-]/g, '');
-  if (!cleaned) {
-    return null;
-  }
-
-  const lastCommaIndex = cleaned.lastIndexOf(',');
-  const lastDotIndex = cleaned.lastIndexOf('.');
-  const hasComma = lastCommaIndex !== -1;
-  const hasDot = lastDotIndex !== -1;
-
-  let normalized = cleaned;
-
-  if (hasComma && hasDot) {
-    normalized =
-      lastCommaIndex > lastDotIndex
-        ? cleaned.replace(/\./g, '').replace(',', '.')
-        : cleaned.replace(/,/g, '');
-  } else if (hasComma) {
-    const decimalDigits = cleaned.length - lastCommaIndex - 1;
-    normalized =
-      decimalDigits > 0 && decimalDigits <= 4
-        ? cleaned.replace(/\./g, '').replace(',', '.')
-        : cleaned.replace(/,/g, '');
-  } else if (hasDot) {
-    const decimalDigits = cleaned.length - lastDotIndex - 1;
-    normalized = decimalDigits > 0 && decimalDigits <= 4 ? cleaned : cleaned.replace(/\./g, '');
-  }
-
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function decodeHtmlEntities(value) {
-  return String(value ?? '')
-    .replace(/&nbsp;|&#160;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'");
-}
-
-function stripHtmlToText(html) {
-  return compactWhitespace(
-    decodeHtmlEntities(
-      String(html ?? '')
-        .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-        .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
-        .replace(/<!--[\s\S]*?-->/g, ' ')
-        .replace(/<[^>]+>/g, ' '),
-    ),
-  );
-}
-
-function extractLatestTradePrice(text) {
-  const normalizedText = compactWhitespace(text);
-  if (!normalizedText) {
-    return null;
-  }
-
-  const latestTradesSection = normalizedText.split(/Siste handler/i)[1] ?? '';
-  const candidateText = latestTradesSection || normalizedText;
-  const tradeMatch = candidateText.match(
-    /\d{1,2}:\d{2}:\d{2}\s+([0-9][0-9\s.,]*)\s+\d/i,
-  );
-
-  if (!tradeMatch) {
-    return null;
-  }
-
-  const priceText = compactWhitespace(tradeMatch[1]);
-  const price = parseLocaleNumber(priceText);
-
-  if (!Number.isFinite(price) || price <= 0) {
-    return null;
-  }
-
-  return {
-    price,
-    priceText,
-  };
-}
-
-function buildFetchedMonitorPayload(plan, sourceUrl, priceEntry) {
-  const ticker = normalizeMonitorTicker(plan?.instrument?.ticker);
-  if (!ticker || !priceEntry) {
-    return null;
-  }
-
-  return {
-    ticker,
-    name: compactWhitespace(plan?.instrument?.name) || ticker,
-    market: compactWhitespace(plan?.instrument?.market) || undefined,
-    currency: compactWhitespace(plan?.instrument?.currency).toUpperCase() || 'NOK',
-    currentPrice: priceEntry.price,
-    currentPriceText: priceEntry.priceText,
-    sourceUrl,
-  };
-}
-
-function buildSourceUrlCandidates(sourceUrl) {
-  const normalizedSourceUrl = compactWhitespace(sourceUrl);
-  if (!normalizedSourceUrl) {
-    return [];
-  }
-
-  const candidates = [];
-
-  try {
-    const parsed = new URL(normalizedSourceUrl);
-
-    const withDetails = new URL(parsed.toString());
-    withDetails.search = '?details';
-    const withDetailsUrl = withDetails.toString();
-    if (!candidates.includes(withDetailsUrl)) {
-      candidates.push(withDetailsUrl);
-    }
-
-    parsed.search = '';
-    parsed.hash = '';
-    const withoutDetails = parsed.toString();
-    if (!candidates.includes(withoutDetails)) {
-      candidates.push(withoutDetails);
-    }
-
-    if (!candidates.includes(normalizedSourceUrl)) {
-      candidates.push(normalizedSourceUrl);
-    }
-  } catch (_error) {
-    candidates.push(normalizedSourceUrl);
-  }
-
-  return candidates;
-}
-
-async function openBackgroundQuoteTab(sourceUrl) {
-  const openedTab = await new Promise((resolve) => {
-    chrome.tabs.create(
-      {
-        url: sourceUrl,
-        active: false,
-      },
-      resolve,
-    );
-  });
-
-  if (!openedTab?.id) {
-    throw new Error('Could not open the Nordnet quote page in a background tab.');
-  }
-
-  await waitForTabComplete(openedTab.id);
-  return openedTab.id;
-}
-
-async function removeTabQuietly(tabId) {
-  if (!tabId) {
-    return;
-  }
-
-  try {
-    await chrome.tabs.remove(tabId);
-  } catch (_error) {
-    // Ignore cleanup errors if the temporary tab was already closed.
-  }
-}
-
-async function fetchPayloadFromBackgroundTab(plan, candidateUrl) {
-  let tabId = null;
-
-  try {
-    tabId = await openBackgroundQuoteTab(candidateUrl);
-    const payloadResponse = await loadTabStockPayload(tabId, {
-      retryCount: BACKGROUND_TAB_PAYLOAD_RETRY_COUNT,
-      retryDelayMs: BACKGROUND_TAB_PAYLOAD_RETRY_DELAY_MS,
-    });
-
-    if (!payloadResponse?.ok || !payloadResponse?.payload) {
-      throw new Error(payloadResponse?.error ?? 'Could not read instrument data from the Nordnet quote tab.');
-    }
-
-    return {
-      ok: true,
-      payload: {
-        ...payloadResponse.payload,
-        sourceUrl: candidateUrl,
-      },
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : 'Could not read instrument data from the Nordnet quote tab.',
-    };
-  } finally {
-    await removeTabQuietly(tabId);
-  }
-}
-
-async function fetchPayloadFromSourceUrl(plan) {
-  const sourceUrl = typeof plan?.instrument?.sourceUrl === 'string' ? plan.instrument.sourceUrl.trim() : '';
-  const ticker = normalizeMonitorTicker(plan?.instrument?.ticker);
-
-  if (!ticker || !isSupportedNordnetUrl(sourceUrl)) {
-    return {
-      ok: false,
-      error: 'A supported Nordnet source URL is required.',
-    };
-  }
-
-  const candidateUrls = buildSourceUrlCandidates(sourceUrl);
-  let lastError = 'Could not fetch the monitored Nordnet quote page.';
-
-  for (const candidateUrl of candidateUrls) {
-    try {
-      const response = await fetch(candidateUrl, {
-        method: 'GET',
-        credentials: 'include',
-        cache: 'no-store',
-        redirect: 'follow',
-      });
-
-      if (!response.ok) {
-        lastError = `Nordnet quote request failed (${response.status}).`;
-        continue;
-      }
-
-      const html = await response.text();
-      const latestTrade = extractLatestTradePrice(stripHtmlToText(html));
-
-      if (!latestTrade) {
-        const tabPayloadResponse = await fetchPayloadFromBackgroundTab(plan, candidateUrl);
-        if (tabPayloadResponse?.ok && tabPayloadResponse?.payload) {
-          debugLog('Background quote tab fallback succeeded', {
-            ticker,
-            sourceUrl: candidateUrl,
-          });
-          return tabPayloadResponse;
-        }
-
-        lastError =
-          tabPayloadResponse?.error ??
-          'No latest trade price was found in the Nordnet quote response.';
-        continue;
-      }
-
-      const payload = buildFetchedMonitorPayload(plan, candidateUrl, latestTrade);
-      if (!payload) {
-        lastError = 'Fetched Nordnet quote data could not be converted into a monitor payload.';
-        continue;
-      }
-
-      return {
-        ok: true,
-        payload,
-      };
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : 'Could not fetch the monitored Nordnet quote page.';
-    }
-  }
-
-  return {
-    ok: false,
-    error: lastError,
-  };
-}
-
 async function syncMonitorTickersFromPlans(plans) {
   const nextTickers = [...new Set(
     (Array.isArray(plans) ? plans : [])
@@ -1746,57 +1473,10 @@ async function refreshOpenNordnetTabs() {
   return refreshedTickers;
 }
 
-async function refreshInstrumentFromSourceUrl(plan, refreshedTickers) {
-  const ticker = normalizeMonitorTicker(plan?.instrument?.ticker);
-  const sourceUrl = typeof plan?.instrument?.sourceUrl === 'string' ? plan.instrument.sourceUrl.trim() : '';
-
-  if (!ticker || refreshedTickers.has(ticker) || !isSupportedNordnetUrl(sourceUrl)) {
-    return false;
-  }
-
-  try {
-    const payloadResponse = await fetchPayloadFromSourceUrl(plan);
-    if (!payloadResponse?.ok || !payloadResponse?.payload) {
-      throw new Error(payloadResponse?.error ?? 'Could not read instrument data from the Nordnet quote response.');
-    }
-
-    const payload = payloadResponse.payload;
-    await publishCurrentStockPriceUpdate(payload, 'nordnet-background-source-fetch');
-
-    refreshedTickers.add(ticker);
-    return true;
-  } catch (error) {
-    debugLog('Background source-url refresh failed', {
-      ticker,
-      sourceUrl,
-      error: error instanceof Error ? error.message : error,
-    });
-    return false;
-  }
-}
-
-async function refreshMonitoredSourceUrls(plans, refreshedTickers) {
-  const uniquePlansByTicker = new Map();
-
-  for (const plan of Array.isArray(plans) ? plans : []) {
-    const ticker = normalizeMonitorTicker(plan?.instrument?.ticker);
-    if (!ticker || uniquePlansByTicker.has(ticker)) {
-      continue;
-    }
-
-    uniquePlansByTicker.set(ticker, plan);
-  }
-
-  for (const plan of uniquePlansByTicker.values()) {
-    await refreshInstrumentFromSourceUrl(plan, refreshedTickers);
-  }
-}
-
 async function runBackgroundPriceRefresh() {
   try {
     const plans = await readStoredMonitorPlans();
     const refreshedTickers = await refreshOpenNordnetTabs();
-    await refreshMonitoredSourceUrls(plans, refreshedTickers);
     await syncStoredPricesFromServerSnapshots(plans);
     await fetchPricesAndPublish();
   } catch (error) {
@@ -1804,12 +1484,6 @@ async function runBackgroundPriceRefresh() {
       error: error instanceof Error ? error.message : error,
     });
   }
-}
-
-function scheduleBackgroundPriceRefreshAlarm() {
-  chrome.alarms.create(BACKGROUND_PRICE_REFRESH_ALARM, {
-    periodInMinutes: BACKGROUND_PRICE_REFRESH_PERIOD_MINUTES,
-  });
 }
 
 async function fetchPricesAndPublish() {
@@ -1838,22 +1512,7 @@ async function readExtensionPrices() {
 
 chrome.runtime.onInstalled.addListener((details) => {
   debugLog('onInstalled', details);
-  scheduleBackgroundPriceRefreshAlarm();
   fetchPricesAndPublish();
-  void runBackgroundPriceRefresh();
-});
-
-chrome.runtime.onStartup.addListener(() => {
-  scheduleBackgroundPriceRefreshAlarm();
-  void runBackgroundPriceRefresh();
-});
-
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm?.name !== BACKGROUND_PRICE_REFRESH_ALARM) {
-    return;
-  }
-
-  void runBackgroundPriceRefresh();
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

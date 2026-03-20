@@ -1490,8 +1490,34 @@
     };
   }
 
+  function requestActiveMonitoringPrice(defaultValue) {
+    const defaultText =
+      Number.isFinite(defaultValue) && defaultValue !== null ? String(defaultValue) : '';
+    const response = window.prompt(
+      'Enter the price where this active monitor should trigger in StockTrade.',
+      defaultText,
+    );
+    if (response === null) {
+      return null;
+    }
+
+    const parsed = parseLocaleNumber(response);
+    if (parsed === null || parsed <= 0) {
+      return {
+        ok: false,
+        error: 'Enter a valid monitoring price greater than zero.',
+      };
+    }
+
+    return {
+      ok: true,
+      value: parsed,
+      text: response,
+    };
+  }
+
   function requestQuickMonitoringPlan(defaultValue, currentValue) {
-    const priceInput = requestBuyMonitoringPrice(defaultValue);
+    const priceInput = requestActiveMonitoringPrice(defaultValue);
     if (!priceInput || !priceInput.ok || priceInput.value === null) {
       return priceInput;
     }
