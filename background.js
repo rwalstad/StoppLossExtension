@@ -15,6 +15,57 @@ const NORDNET_TAB_PATTERNS = [
   'https://www.nordnet.no/etp/sertifikat/*/liste/*',
 ];
 
+const EXCHANGE_TRADING_HOURS = {
+  XOSL: { timezone: 'Europe/Oslo',        open: '09:00', close: '16:25' },
+  XSTO: { timezone: 'Europe/Stockholm',   open: '09:00', close: '17:30' },
+  XCSE: { timezone: 'Europe/Copenhagen',  open: '09:00', close: '17:00' },
+  XHEL: { timezone: 'Europe/Helsinki',    open: '09:00', close: '18:30' },
+  XICE: { timezone: 'Atlantic/Reykjavik', open: '09:30', close: '15:30' },
+  XETR: { timezone: 'Europe/Berlin',      open: '09:00', close: '17:30' },
+  XETA: { timezone: 'Europe/Berlin',      open: '09:00', close: '17:30' },
+  XNYS: { timezone: 'America/New_York',   open: '09:30', close: '16:00' },
+  XNAS: { timezone: 'America/New_York',   open: '09:30', close: '16:00' },
+  XLON: { timezone: 'Europe/London',      open: '08:00', close: '16:30' },
+  XPAR: { timezone: 'Europe/Paris',       open: '09:00', close: '17:30' },
+  XAMS: { timezone: 'Europe/Amsterdam',   open: '09:00', close: '17:30' },
+  // Display name aliases
+  'xetra':               { timezone: 'Europe/Berlin',      open: '09:00', close: '17:30' },
+  'oslo børs':           { timezone: 'Europe/Oslo',        open: '09:00', close: '16:25' },
+  'oslo stock exchange': { timezone: 'Europe/Oslo',        open: '09:00', close: '16:25' },
+  'nasdaq':              { timezone: 'America/New_York',   open: '09:30', close: '16:00' },
+  'nyse':                { timezone: 'America/New_York',   open: '09:30', close: '16:00' },
+  'lse':                 { timezone: 'Europe/London',      open: '08:00', close: '16:30' },
+  'london stock exchange': { timezone: 'Europe/London',   open: '08:00', close: '16:30' },
+};
+
+function isInstrumentTradingNow(instrument) {
+  const hours =
+    EXCHANGE_TRADING_HOURS[instrument?.marketCode] ??
+    EXCHANGE_TRADING_HOURS[instrument?.exchangeName?.toLowerCase()] ??
+    EXCHANGE_TRADING_HOURS[instrument?.market?.toLowerCase()] ??
+    null;
+
+  if (!hours) return true; // Unknown exchange — always allow monitoring
+
+  const now = new Date();
+  const local = new Date(now.toLocaleString('en-US', { timeZone: hours.timezone }));
+  const day = local.getDay(); // 0 = Sun, 6 = Sat
+  if (day === 0 || day === 6) return false;
+
+  const currentMinutes = local.getHours() * 60 + local.getMinutes();
+  const [openH, openM] = hours.open.split(':').map(Number);
+  const [closeH, closeM] = hours.close.split(':').map(Number);
+  return currentMinutes >= openH * 60 + openM && currentMinutes <= closeH * 60 + closeM;
+}
+
+function isExchangeOpen(marketCode) {
+  if (!marketCode) {
+    return true;
+  }
+
+  return isInstrumentTradingNow({ marketCode: String(marketCode).trim().toUpperCase() });
+}
+
 function debugLog(step, details) {
   console.info(`[StopLossExtension background] ${step}`, details);
 }
@@ -1082,6 +1133,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 const DEFAULT_MONITOR_TICKERS = [];
 const BACKGROUND_TAB_PAYLOAD_RETRY_COUNT = 10;
 const BACKGROUND_TAB_PAYLOAD_RETRY_DELAY_MS = 750;
+const BACKGROUND_REFRESH_TAB_LOAD_TIMEOUT_MS = 20000;
 const lastReportedBackgroundSnapshotByTicker = new Map();
 
 function normalizeMonitorTicker(value) {
@@ -1094,6 +1146,20 @@ function compactWhitespace(value) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeBackgroundUrl(url) {
+  if (typeof url !== 'string' || !url.trim()) {
+    return '';
+  }
+
+  try {
+    const parsedUrl = new URL(url.trim());
+    parsedUrl.hash = '';
+    return parsedUrl.toString();
+  } catch (_error) {
+    return '';
+  }
 }
 
 async function syncMonitorTickersFromPlans(plans) {
@@ -1121,6 +1187,27 @@ async function syncFloatingMonitorStateFromPlans(plans, options = {}) {
       updatedAt: new Date().toISOString(),
     },
   }, resolve));
+}
+
+async function syncFloatingMonitorCurrentTicker(currentTicker) {
+  const storage = await new Promise((resolve) => chrome.storage.local.get(['floatingMonitorState'], resolve));
+  const currentState = storage?.floatingMonitorState ?? {};
+  const nextTicker = normalizeMonitorTicker(currentTicker);
+  const previousTicker = normalizeMonitorTicker(currentState?.currentTicker);
+
+  if (nextTicker === previousTicker) {
+    return false;
+  }
+
+  await new Promise((resolve) => chrome.storage.local.set({
+    floatingMonitorState: {
+      ...currentState,
+      currentTicker: nextTicker,
+      updatedAt: new Date().toISOString(),
+    },
+  }, resolve));
+
+  return true;
 }
 
 function buildStoredMonitoringPlanEntry({ instrument, monitoringPlan, sourceUrl, pendingOrder }) {
@@ -1258,6 +1345,65 @@ async function loadTabStockPayload(tabId, options = {}) {
   }
 
   return payloadResponse;
+}
+
+async function syncCurrentTickerFromTab(tabId, options = {}) {
+  if (!tabId) {
+    if (options?.clearWhenUnavailable) {
+      await syncFloatingMonitorCurrentTicker('');
+    }
+    return null;
+  }
+
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!isSupportedNordnetUrl(tab?.url)) {
+      if (options?.clearWhenUnavailable) {
+        await syncFloatingMonitorCurrentTicker('');
+      }
+      return null;
+    }
+
+    const payloadResponse = await loadTabStockPayload(tabId);
+    const ticker = normalizeMonitorTicker(payloadResponse?.payload?.ticker);
+
+    if (!payloadResponse?.ok || !ticker) {
+      if (options?.clearWhenUnavailable) {
+        await syncFloatingMonitorCurrentTicker('');
+      }
+      return null;
+    }
+
+    await syncFloatingMonitorCurrentTicker(ticker);
+    return ticker;
+  } catch (error) {
+    debugLog('Sync current ticker from tab failed', {
+      tabId,
+      error: error instanceof Error ? error.message : error,
+    });
+
+    if (options?.clearWhenUnavailable) {
+      await syncFloatingMonitorCurrentTicker('');
+    }
+    return null;
+  }
+}
+
+async function syncCurrentTickerFromActiveTab(options = {}) {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const activeTab = tabs[0];
+    return await syncCurrentTickerFromTab(activeTab?.id, options);
+  } catch (error) {
+    debugLog('Sync current ticker from active tab failed', {
+      error: error instanceof Error ? error.message : error,
+    });
+
+    if (options?.clearWhenUnavailable) {
+      await syncFloatingMonitorCurrentTicker('');
+    }
+    return null;
+  }
 }
 
 function buildBackgroundPriceSnapshotKey(payload) {
@@ -1473,16 +1619,133 @@ async function refreshOpenNordnetTabs() {
   return refreshedTickers;
 }
 
+async function waitForTabToFinishLoading(tabId, timeoutMs = BACKGROUND_REFRESH_TAB_LOAD_TIMEOUT_MS) {
+  if (!tabId) {
+    throw new Error('Could not open the Nordnet quote tab.');
+  }
+
+  const initialTab = await chrome.tabs.get(tabId).catch(() => null);
+  if (initialTab?.status === 'complete') {
+    return;
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(handleUpdated);
+      reject(new Error('Timed out waiting for the Nordnet quote page to load.'));
+    }, timeoutMs);
+
+    const handleUpdated = (updatedTabId, changeInfo) => {
+      if (updatedTabId !== tabId || changeInfo.status !== 'complete') {
+        return;
+      }
+
+      clearTimeout(timeoutId);
+      chrome.tabs.onUpdated.removeListener(handleUpdated);
+      resolve();
+    };
+
+    chrome.tabs.onUpdated.addListener(handleUpdated);
+  });
+}
+
+async function scrapeMissingMonitorPlanTabs(plans, refreshedTickers = new Set()) {
+  const missingPlans = (Array.isArray(plans) ? plans : []).filter((plan) => {
+    const ticker = normalizeMonitorTicker(plan?.instrument?.ticker);
+    const sourceUrl = normalizeBackgroundUrl(plan?.instrument?.sourceUrl);
+    return Boolean(ticker && sourceUrl && !refreshedTickers.has(ticker));
+  });
+
+  if (missingPlans.length === 0) {
+    return refreshedTickers;
+  }
+
+  debugLog('Background missing tab scrape start', {
+    count: missingPlans.length,
+    tickers: missingPlans.map((plan) => normalizeMonitorTicker(plan?.instrument?.ticker)),
+  });
+
+  for (const plan of missingPlans) {
+    const ticker = normalizeMonitorTicker(plan?.instrument?.ticker);
+    const sourceUrl = normalizeBackgroundUrl(plan?.instrument?.sourceUrl);
+
+    if (!ticker || !sourceUrl || refreshedTickers.has(ticker)) {
+      continue;
+    }
+
+    let temporaryTabId = null;
+
+    try {
+      const createdTab = await chrome.tabs.create({
+        url: sourceUrl,
+        active: false,
+      });
+
+      temporaryTabId = createdTab?.id ?? null;
+      await waitForTabToFinishLoading(temporaryTabId);
+
+      const payloadResponse = await loadTabStockPayload(temporaryTabId, {
+        retryCount: BACKGROUND_TAB_PAYLOAD_RETRY_COUNT + 4,
+      });
+
+      if (!payloadResponse?.ok || !payloadResponse?.payload) {
+        debugLog('Background missing tab payload unavailable', {
+          ticker,
+          sourceUrl,
+          error: payloadResponse?.error ?? 'Unknown payload error',
+        });
+        continue;
+      }
+
+      const payloadTicker = normalizeMonitorTicker(payloadResponse.payload?.ticker);
+      await publishCurrentStockPriceUpdate(payloadResponse.payload, 'nordnet-background-hidden-tab');
+      refreshedTickers.add(payloadTicker || ticker);
+    } catch (error) {
+      debugLog('Background missing tab scrape failed', {
+        ticker,
+        sourceUrl,
+        error: error instanceof Error ? error.message : error,
+      });
+    } finally {
+      if (temporaryTabId) {
+        await chrome.tabs.remove(temporaryTabId).catch(() => undefined);
+      }
+    }
+  }
+
+  return refreshedTickers;
+}
+
 async function runBackgroundPriceRefresh() {
   try {
     const plans = await readStoredMonitorPlans();
+    await syncCurrentTickerFromActiveTab({ clearWhenUnavailable: true });
+
+    if (!isExchangeOpen('XOSL')) {
+      debugLog('Background price refresh skipped', {
+        reason: 'XOSL market closed',
+        planCount: plans.length,
+      });
+      return {
+        ok: true,
+        skipped: true,
+        reason: 'XOSL market closed',
+      };
+    }
+
     const refreshedTickers = await refreshOpenNordnetTabs();
+    await scrapeMissingMonitorPlanTabs(plans, refreshedTickers);
     await syncStoredPricesFromServerSnapshots(plans);
     await fetchPricesAndPublish();
+    return {
+      ok: true,
+      skipped: false,
+    };
   } catch (error) {
     debugLog('Background price refresh failed', {
       error: error instanceof Error ? error.message : error,
     });
+    throw error;
   }
 }
 
@@ -1513,6 +1776,30 @@ async function readExtensionPrices() {
 chrome.runtime.onInstalled.addListener((details) => {
   debugLog('onInstalled', details);
   fetchPricesAndPublish();
+});
+
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  void syncCurrentTickerFromTab(activeInfo?.tabId, { clearWhenUnavailable: true });
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'complete') {
+    return;
+  }
+
+  if (!tab?.active) {
+    return;
+  }
+
+  void syncCurrentTickerFromTab(tabId, { clearWhenUnavailable: true });
+});
+
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  if (windowId === chrome.windows.WINDOW_ID_NONE) {
+    return;
+  }
+
+  void syncCurrentTickerFromActiveTab({ clearWhenUnavailable: true });
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

@@ -33,6 +33,18 @@
         font-size: 20px;
       }
 
+      .page-title {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-bottom: 8px;
+      }
+
+      .page-title h1 {
+        margin: 0;
+      }
+
       p {
         margin: 0 0 12px;
         color: #486581;
@@ -93,6 +105,47 @@
         font-weight: 700;
       }
 
+      .market-flag-badge {
+        display: none;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 10px;
+        border-radius: 999px;
+        border: 1px solid #d9e2ec;
+        background: #f8fbfc;
+        color: #102a43;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1;
+      }
+
+      .market-flag-badge.is-visible {
+        display: inline-flex;
+      }
+
+      .market-flag-emoji {
+        font-size: 15px;
+        line-height: 1;
+      }
+
+      .market-flag-text {
+        white-space: nowrap;
+      }
+
+      .market-flag-status {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: #d64545;
+        box-shadow: 0 0 0 2px rgba(214, 69, 69, 0.15);
+        flex: 0 0 auto;
+      }
+
+      .market-flag-status.is-open {
+        background: #1f9d55;
+        box-shadow: 0 0 0 2px rgba(31, 157, 85, 0.15);
+      }
+
       .muted {
         color: #627d98;
         font-size: 13px;
@@ -129,7 +182,10 @@
         color: #8d6b00;
         font-weight: 700;
       }
-
+      .status-closed {
+        color: #888;
+        font-style: italic;
+      }
       .footer-note {
         margin-top: 12px;
         color: #627d98;
@@ -381,7 +437,14 @@
           </div>
         </div>
         <div class="full-panel">
-        <h1>Active monitors for trader: <span id="selectedTraderLabel">-</span></h1>
+        <div class="page-title">
+          <h1>Active monitors for trader: <span id="selectedTraderLabel">-</span></h1>
+          <span id="headerMarketFlagBadge" class="market-flag-badge" aria-live="polite">
+            <span id="headerMarketFlagEmoji" class="market-flag-emoji" aria-hidden="true"></span>
+            <span id="headerMarketFlagText" class="market-flag-text"></span>
+            <span id="headerMarketFlagStatus" class="market-flag-status" aria-hidden="true"></span>
+          </span>
+        </div>
         <p id="monitorSummary">Loading active monitors...</p>
         <div class="toolbar">
           <span class="muted">Background quotes are stored locally and mirrored into the app.</span>

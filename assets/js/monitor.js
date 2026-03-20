@@ -7,6 +7,10 @@ const refreshButton = document.getElementById('refreshMonitorPrices');
 const syncMonitorPlansButton = document.getElementById('syncMonitorPlans');
 const monitorVersion = document.getElementById('monitorVersion');
 const selectedTraderLabel = document.getElementById('selectedTraderLabel');
+const headerMarketFlagBadge = document.getElementById('headerMarketFlagBadge');
+const headerMarketFlagEmoji = document.getElementById('headerMarketFlagEmoji');
+const headerMarketFlagText = document.getElementById('headerMarketFlagText');
+const headerMarketFlagStatus = document.getElementById('headerMarketFlagStatus');
 const toggleViewButton = document.getElementById('toggleMonitorView');
 const toggleCompactViewButton = document.getElementById('toggleMonitorViewCompact');
 const minimalList = document.getElementById('minimalList');
@@ -127,6 +131,170 @@ function formatTimestamp(value) {
     minute: '2-digit',
     second: '2-digit',
   });
+}
+/*XOSL – Oslo Børs All-share Index
+Inneholder alle aksjer notert på Oslo Børs
+Bredere enn OSEBX (Nordnet), som kun inneholder de med likviditet over en viss terskel*/
+const EXCHANGE_TRADING_HOURS = {
+  XOSL: { timezone: 'Europe/Oslo',        open: '09:00', close: '16:25' },
+  XSTO: { timezone: 'Europe/Stockholm',   open: '09:00', close: '17:30' },
+  XCSE: { timezone: 'Europe/Copenhagen',  open: '09:00', close: '17:00' },
+  XHEL: { timezone: 'Europe/Helsinki',    open: '09:00', close: '18:30' },
+  XICE: { timezone: 'Atlantic/Reykjavik', open: '09:30', close: '15:30' },
+  XETR: { timezone: 'Europe/Berlin',      open: '09:00', close: '17:30' },
+  XETA: { timezone: 'Europe/Berlin',      open: '09:00', close: '17:30' },
+  XNYS: { timezone: 'America/New_York',   open: '09:30', close: '16:00' },
+  XNAS: { timezone: 'America/New_York',   open: '09:30', close: '16:00' },
+  XLON: { timezone: 'Europe/London',      open: '08:00', close: '16:30' },
+  XPAR: { timezone: 'Europe/Paris',       open: '09:00', close: '17:30' },
+  XAMS: { timezone: 'Europe/Amsterdam',   open: '09:00', close: '17:30' },
+  'xetra':               { timezone: 'Europe/Berlin',    open: '09:00', close: '17:30' },
+  'oslo børs':           { timezone: 'Europe/Oslo',      open: '09:00', close: '16:25' },
+  'oslo stock exchange': { timezone: 'Europe/Oslo',      open: '09:00', close: '16:25' },
+  'nasdaq':              { timezone: 'America/New_York', open: '09:30', close: '16:00' },
+  'nyse':                { timezone: 'America/New_York', open: '09:30', close: '16:00' },
+  'lse':                 { timezone: 'Europe/London',    open: '08:00', close: '16:30' },
+  'london stock exchange': { timezone: 'Europe/London', open: '08:00', close: '16:30' },
+};
+
+const EXCHANGE_COUNTRY_CODES = {
+  XOSL: 'NO',
+  XSTO: 'SE',
+  XCSE: 'DK',
+  XHEL: 'FI',
+  XICE: 'IS',
+  XETR: 'DE',
+  XETA: 'DE',
+  XNYS: 'US',
+  XNAS: 'US',
+  XLON: 'GB',
+  XPAR: 'FR',
+  XAMS: 'NL',
+};
+
+const COUNTRY_NAME_TO_CODE = {
+  norway: 'NO',
+  norge: 'NO',
+  sweden: 'SE',
+  sverige: 'SE',
+  denmark: 'DK',
+  danmark: 'DK',
+  finland: 'FI',
+  iceland: 'IS',
+  island: 'IS',
+  germany: 'DE',
+  deutschland: 'DE',
+  usa: 'US',
+  us: 'US',
+  'united states': 'US',
+  'united states of america': 'US',
+  uk: 'GB',
+  britain: 'GB',
+  'united kingdom': 'GB',
+  england: 'GB',
+  france: 'FR',
+  netherlands: 'NL',
+  holland: 'NL',
+};
+
+function isInstrumentTradingNow(instrument) {
+  const hours =
+    EXCHANGE_TRADING_HOURS[instrument?.marketCode] ??
+    EXCHANGE_TRADING_HOURS[instrument?.exchangeName?.toLowerCase()] ??
+    EXCHANGE_TRADING_HOURS[instrument?.market?.toLowerCase()] ??
+    null;
+
+  if (!hours) return true;
+
+  const now = new Date();
+  const local = new Date(now.toLocaleString('en-US', { timeZone: hours.timezone }));
+  const day = local.getDay();
+  if (day === 0 || day === 6) return false;
+
+  const currentMinutes = local.getHours() * 60 + local.getMinutes();
+  const [openH, openM] = hours.open.split(':').map(Number);
+  const [closeH, closeM] = hours.close.split(':').map(Number);
+  return currentMinutes >= openH * 60 + openM && currentMinutes <= closeH * 60 + closeM;
+}
+
+function getCountryCodeFromInstrument(instrument) {
+  const marketCode = String(instrument?.marketCode ?? '').trim().toUpperCase();
+  if (marketCode && EXCHANGE_COUNTRY_CODES[marketCode]) {
+    return EXCHANGE_COUNTRY_CODES[marketCode];
+  }
+
+  const normalizedCountry = String(instrument?.country ?? '').trim().toLowerCase();
+  if (normalizedCountry && COUNTRY_NAME_TO_CODE[normalizedCountry]) {
+    return COUNTRY_NAME_TO_CODE[normalizedCountry];
+  }
+
+  return '';
+}
+
+function getFlagEmoji(countryCode) {
+  const normalizedCode = String(countryCode ?? '').trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(normalizedCode)) {
+    return '';
+  }
+
+  return String.fromCodePoint(
+    ...normalizedCode.split('').map((char) => 127397 + char.charCodeAt(0)),
+  );
+}
+
+function getExchangeHours(instrument) {
+  return (
+    EXCHANGE_TRADING_HOURS[instrument?.marketCode] ??
+    EXCHANGE_TRADING_HOURS[instrument?.exchangeName?.toLowerCase()] ??
+    EXCHANGE_TRADING_HOURS[instrument?.market?.toLowerCase()] ??
+    null
+  );
+}
+
+function getInstrumentMarketLabel(instrument) {
+  const exchangeName = String(instrument?.exchangeName ?? '').trim();
+  if (exchangeName) {
+    return exchangeName;
+  }
+
+  const market = String(instrument?.market ?? '').trim();
+  if (market) {
+    return market;
+  }
+
+  const marketCode = String(instrument?.marketCode ?? '').trim().toUpperCase();
+  return marketCode || 'Market';
+}
+
+function syncHeaderMarketFlag() {
+  if (!headerMarketFlagBadge || !headerMarketFlagEmoji || !headerMarketFlagText || !headerMarketFlagStatus) {
+    return;
+  }
+
+  const preferredPlan = getPreferredCurrentPlan();
+  const instrument = preferredPlan?.instrument;
+
+  if (!instrument) {
+    headerMarketFlagBadge.classList.remove('is-visible');
+    headerMarketFlagStatus.classList.remove('is-open');
+    headerMarketFlagBadge.removeAttribute('title');
+    headerMarketFlagText.textContent = '';
+    headerMarketFlagEmoji.textContent = '';
+    return;
+  }
+
+  const marketLabel = getInstrumentMarketLabel(instrument);
+  const flagEmoji = getFlagEmoji(getCountryCodeFromInstrument(instrument));
+  const isOpen = isInstrumentTradingNow(instrument);
+  const hours = getExchangeHours(instrument);
+  const statusLabel = isOpen ? 'Open' : 'Closed';
+  const hoursLabel = hours ? `${hours.open}-${hours.close} ${hours.timezone}` : 'Trading hours unavailable';
+
+  headerMarketFlagBadge.classList.add('is-visible');
+  headerMarketFlagEmoji.textContent = flagEmoji;
+  headerMarketFlagText.textContent = `${marketLabel} ${statusLabel}`;
+  headerMarketFlagStatus.classList.toggle('is-open', isOpen);
+  headerMarketFlagBadge.title = `${marketLabel}: ${statusLabel}. ${hoursLabel}`;
 }
 
 function getPlanKey(plan) {
@@ -525,6 +693,7 @@ function appendMessage(plan, price, fetchedAt) {
 
 function renderPlans() {
   syncSelectedTraderLabel();
+  syncHeaderMarketFlag();
   rowMap.clear();
   monitorTableBody.replaceChildren();
 

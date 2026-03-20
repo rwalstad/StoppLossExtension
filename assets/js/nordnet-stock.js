@@ -415,6 +415,26 @@
     return parts.at(-1) ?? combinedMarket;
   }
 
+  function getExchangeFromFlag() {
+    for (const titleEl of document.querySelectorAll('svg[role="img"] title')) {
+      const country = titleEl.textContent?.trim();
+      if (!country) continue;
+
+      const svg = titleEl.closest('svg');
+      const container = svg?.parentElement?.parentElement;
+      if (!container) continue;
+
+      const exchangeName = [...container.querySelectorAll('span, div, p, a')]
+        .map((el) => el.textContent?.trim())
+        .find((t) => t && t.length > 0 && t.length < 60 && !t.includes(country));
+
+      if (country || exchangeName) {
+        return { country: country ?? '', exchangeName: exchangeName ?? '' };
+      }
+    }
+    return null;
+  }
+
   function findMetricValueByLabel(labelPattern) {
     const candidates = [...document.querySelectorAll('div, section, article, li')];
 
@@ -772,12 +792,14 @@
     const priceCurrency = extractCurrencyFromPrice() || normalizeCurrencyCode(orderForm?.priceText ?? '');
     const fallbackCurrency = MARKET_CURRENCY_MAP[parsed.marketCode] || 'NOK';
     const tradedCurrency = factCurrency || priceCurrency || fallbackCurrency;
-
+    const flagInfo = getExchangeFromFlag();
     const payload = {
       ticker: parsed.ticker,
       name: productName || headerName || parsed.name,
-      market: marketLabel || parsed.marketCode,
+      market: marketLabel  || flagInfo?.exchangeName || parsed.marketCode,
       marketCode: parsed.marketCode,
+      exchangeName: flagInfo?.exchangeName || marketLabel || undefined,
+      country: flagInfo?.country || undefined,
       currency: tradedCurrency,
       currentPrice: currentMarketPrice.value ?? undefined,
       currentPriceText: currentMarketPrice.text || undefined,
